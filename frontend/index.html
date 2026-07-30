@@ -16,83 +16,183 @@
                 </svg>
                 <span>ЭнергоКП</span>
             </div>
-            <span class="badge">Стартовая версия v1.1 (с парсером PDF)</span>
+            <span class="badge">Бизнес-версия v1.2 (Excel + PDF)</span>
         </div>
     </header>
 
     <main class="container main-content">
         <section class="intro">
             <h1>Генератор коммерческих предложений</h1>
-            <p class="subtitle">Загрузите техническое задание или спецификацию в формате PDF, чтобы автоматически извлечь позиции и составить коммерческое предложение.</p>
+            <p class="subtitle">Интеллектуальная система автоматизации и расчета стоимости электрощитового оборудования.</p>
         </section>
 
-        <section class="uploader-section">
-            <div class="upload-card" id="drop-zone">
-                <div class="upload-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M7 16V4M7 4L3 8M7 4L11 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M17 8V20M17 20L13 16M17 20L21 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                </div>
-                <h3>Перетащите файл спецификации сюда</h3>
-                <p>или выберите файл на компьютере (поддерживаются только .pdf файлы)</p>
+        <!-- Navigation Tabs -->
+        <div class="tabs">
+            <button class="tab-link active" id="tab-excel-btn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px; vertical-align: middle;">
+                    <path d="M14 2H6C5.44772 2 5 2.44772 5 3V21C5 21.5523 5.44772 22 6 22H18C18.5523 22 19 21.5523 19 21V7L14 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M14 2V7H19" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M8 13H16M8 17H16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Расчет КП из Excel (Спецификация + Прайс)
+            </button>
+            <button class="tab-link" id="tab-pdf-btn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px; vertical-align: middle;">
+                    <path d="M14 2H6C4.9 2 4 2.9 4 4V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V8L14 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M14 2V8H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M16 13H8M16 17H8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Анализ PDF-спецификаций (OCR)
+            </button>
+        </div>
 
-                <input type="file" id="file-input" accept=".pdf" style="display: none;">
-                <button class="btn btn-primary" id="select-btn">Выбрать PDF-файл</button>
-            </div>
-        </section>
-
-        <section class="status-section hidden" id="status-card">
-            <div class="status-card">
-                <div class="spinner" id="loader"></div>
-                <div class="status-info">
-                    <h4 id="status-title">Файл загружается...</h4>
-                    <p id="status-subtitle">Пожалуйста, подождите.</p>
-                </div>
-            </div>
-        </section>
-
-        <section class="results-section hidden" id="results-card">
-            <div class="results-grid">
-                <!-- Left panel: Extracted Text -->
-                <div class="panel">
-                    <div class="panel-header">
-                        <h2>Извлечённый текст спецификации</h2>
-                        <span class="help-text">Текст, распознанный из PDF-документа</span>
-                    </div>
-                    <div class="panel-body">
-                        <details open class="collapsible-text">
-                            <summary class="btn btn-outline btn-sm">Развернуть / Свернуть текст</summary>
-                            <pre id="extracted-text-viewer" style="margin-top:15px;">Текст не извлечён.</pre>
-                        </details>
-                    </div>
-                </div>
-
-                <!-- Right panel: Parsed Items JSON -->
-                <div class="panel">
-                    <div class="panel-header">
-                        <h2>Распознанное оборудование (BOM)</h2>
-                        <span class="help-text">Найденные позиции электрощитового оборудования</span>
-                    </div>
-                    <div class="panel-body">
-                        <table class="items-table" id="items-table">
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>Наименование оборудования</th>
-                                    <th class="text-right">Кол-во</th>
-                                    <th>Ед. изм.</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <!-- Dinamically inserted -->
-                            </tbody>
-                        </table>
-                        <div class="json-toggle">
-                            <button class="btn btn-outline btn-sm" id="toggle-json-btn">Показать исходный JSON</button>
+        <!-- Tab 1: Excel Generator Content -->
+        <section class="tab-content" id="excel-generator-tab">
+            <div class="dual-uploader-grid">
+                <!-- Spec Uploader Card -->
+                <div class="uploader-box" id="spec-drop-zone">
+                    <div class="uploader-inner">
+                        <div class="file-icon spec-theme">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M14 2H6C4.89543 2 4 2.89543 4 4V20C4 21.1046 4.89543 22 6 22H18C19.1046 22 20 21.1046 20 20V8L14 2Z" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+                                <path d="M14 2V8H20" stroke="#10b981" stroke-width="2"/>
+                            </svg>
                         </div>
-                        <pre class="json-viewer hidden" id="json-viewer"></pre>
+                        <h3>Техническая спецификация</h3>
+                        <p id="spec-file-status">Перетащите файл .xlsx или выберите на компьютере</p>
+                        <input type="file" id="spec-file-input" accept=".xlsx" style="display: none;">
+                        <button class="btn btn-outline btn-sm" id="spec-select-btn">Выбрать Спецификацию</button>
                     </div>
+                </div>
+
+                <!-- Price list Uploader Card -->
+                <div class="uploader-box" id="price-drop-zone">
+                    <div class="uploader-inner">
+                        <div class="file-icon price-theme">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M14 2H6C4.89543 2 4 2.89543 4 4V20C4 21.1046 4.89543 22 6 22H18C19.1046 22 20 21.1046 20 20V8L14 2Z" fill="#fef2f2" stroke="#ef4444" stroke-width="2"/>
+                                <path d="M14 2V8H20" stroke="#ef4444" stroke-width="2"/>
+                            </svg>
+                        </div>
+                        <h3>Прайс-лист CHINT</h3>
+                        <p id="price-file-status">Перетащите прайс .xlsx или выберите на компьютере</p>
+                        <input type="file" id="price-file-input" accept=".xlsx" style="display: none;">
+                        <button class="btn btn-outline btn-sm" id="price-select-btn">Выбрать Прайс-лист</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action block -->
+            <div class="action-bar text-center">
+                <button class="btn btn-primary btn-lg" id="generate-kp-btn" disabled>
+                    Рассчитать предварительное КП
+                </button>
+            </div>
+
+            <!-- KP Calculation Results Section -->
+            <div class="results-section hidden" id="kp-results-container">
+                <div class="kp-header-bar">
+                    <div>
+                        <h2>Предварительное коммерческое предложение</h2>
+                        <p class="subtitle-sm" id="kp-files-info">Рассчитано на основе спецификации и прайс-листа CHINT</p>
+                    </div>
+                    <button class="btn btn-primary" id="download-kp-excel-btn">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px; vertical-align: middle;">
+                            <path d="M21 15V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H5C4.46957 21 3.96086 20.7893 3.58579 20.4142C3.21071 20.0391 3 19.5304 3 19V15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M7 10L12 15L17 10M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Скачать предварительное КП (Excel)
+                    </button>
+                </div>
+
+                <div class="kp-content" id="kp-tables-wrapper">
+                    <!-- Dynamic KP tables are generated here -->
+                </div>
+
+                <div class="kp-grand-total-box">
+                    <span>ОБЩАЯ СУММА С НДС:</span>
+                    <span id="kp-grand-total-value">0.00 руб.</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tab 2: PDF Parser Content (Previous design maintained for backwards-compatibility) -->
+        <section class="tab-content hidden" id="pdf-parser-tab">
+            <section class="uploader-section">
+                <div class="upload-card" id="drop-zone">
+                    <div class="upload-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M7 16V4M7 4L3 8M7 4L11 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M17 8V20M17 20L13 16M17 20L21 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <h3>Перетащите файл PDF-спецификации сюда</h3>
+                    <p>или выберите файл на компьютере (поддерживаются только .pdf файлы)</p>
+
+                    <input type="file" id="file-input" accept=".pdf" style="display: none;">
+                    <button class="btn btn-primary" id="select-btn">Выбрать PDF-файл</button>
+                </div>
+            </section>
+
+            <section class="status-section hidden" id="status-card">
+                <div class="status-card">
+                    <div class="spinner" id="loader"></div>
+                    <div class="status-info">
+                        <h4 id="status-title">Файл загружается...</h4>
+                        <p id="status-subtitle">Пожалуйста, подождите.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="results-section hidden" id="results-card">
+                <div class="results-grid">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>Извлечённый текст спецификации</h2>
+                        </div>
+                        <div class="panel-body">
+                            <details open class="collapsible-text">
+                                <summary class="btn btn-outline btn-sm">Развернуть / Свернуть текст</summary>
+                                <pre id="extracted-text-viewer" style="margin-top:15px;">Текст не извлечён.</pre>
+                            </details>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>Распознанное оборудование (BOM)</h2>
+                        </div>
+                        <div class="panel-body">
+                            <table class="items-table" id="items-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Наименование оборудования</th>
+                                        <th class="text-right">Кол-во</th>
+                                        <th>Ед. изм.</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Dinamically inserted -->
+                                </tbody>
+                            </table>
+                            <div class="json-toggle">
+                                <button class="btn btn-outline btn-sm" id="toggle-json-btn">Показать исходный JSON</button>
+                            </div>
+                            <pre class="json-viewer hidden" id="json-viewer"></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </section>
+
+        <!-- General Spinner Indicator -->
+        <section class="status-section hidden" id="general-loader-card">
+            <div class="status-card">
+                <div class="spinner"></div>
+                <div class="status-info">
+                    <h4 id="general-loader-title">Идёт расчет...</h4>
+                    <p id="general-loader-subtitle">Идет разбор спецификации и сопоставление с прайсом.</p>
                 </div>
             </div>
         </section>
