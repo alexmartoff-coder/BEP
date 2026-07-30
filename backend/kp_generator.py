@@ -3,12 +3,48 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import io
+import re
 from backend.price_parser import clean_key
+
+def word_overlap_match(name: str, price_map: Dict[str, float]) -> tuple[float, bool]:
+    """
+    Looks for the best word-overlap match in the price map based on name keywords.
+    Splits the item name into words (>= 3 chars) and counts intersections.
+    """
+    if not name or len(name) < 4:
+        return 0.0, False
+
+    words = [w.lower() for w in re.split(r'[^A-Za-z0-9А-Яа-я]', name) if len(w) >= 3]
+    if not words:
+        return 0.0, False
+
+    best_key = None
+    best_score = 0
+
+    # We iterate over price keys
+    for key in price_map:
+        if not key or len(key) < 5:
+            continue
+        # Split price key/description into lowercase parts
+        score = sum(1 for w in words if w in key.lower())
+        if score > best_score:
+            best_score = score
+            best_key = key
+
+    # We require at least 2 matching keywords for a solid match
+    if best_key and best_score >= 2:
+        return price_map[best_key], True
+
+    return 0.0, False
 
 def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, float]) -> Dict[str, Any]:
     """
     Combines the parsed board positions with pricing from the CHINT price list.
     Calculates prices, line totals, board subtotals, and grand totals.
+    Matches with strict fallback hierarchy:
+    1. Exact match by clean article code.
+    2. Substring match by clean article code.
+    3. Heuristic matching via keyword word overlap in product name.
     """
     grand_total = 0.0
     kp_boards = []
@@ -19,39 +55,64 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
         board_subtotal = 0.0
 
         for item in board["items"]:
-            article = item["article"]
-            name = item["name"]
-            qty = item["qty"]
-            unit = item["unit"]
+            article = item.get("article", "")
+            name = item.get("name", "")
+            qty = item.get("qty", 1)
+            unit = item.get("unit", "шт")
 
-            # Find price with fallback clean keys
+            # Skip empty entries
+            if not article and not name:
+                continue
+
             price = 0.0
             price_found = False
 
-            # 1. Match by clean article
+            # 1. Exact match by cleaned article
             if article:
                 cleaned_art = clean_key(article)
+                # First check direct key
                 if cleaned_art in price_map:
                     price = price_map[cleaned_art]
                     price_found = True
+                else:
+                    # Compare cleaned versions of both keys
+                    for pk in price_map:
+                        if cleaned_art == clean_key(pk):
+                            price = price_map[pk]
+                            price_found = True
+                            break
 
-            # 2. Match by clean name if article match failed
+            # 2. Substring/Partial matching by clean article
+            if not price_found and article:
+                cleaned_art = clean_key(article)
+                for pk in price_map:
+                    cleaned_pk = clean_key(pk)
+                    if cleaned_pk and (cleaned_art in cleaned_pk or cleaned_pk in cleaned_art):
+                        price = price_map[pk]
+                        price_found = True
+                        break
+
+            # 3. Match by clean name (exact name match)
             if not price_found and name:
                 cleaned_name = clean_key(name)
                 if cleaned_name in price_map:
                     price = price_map[cleaned_name]
                     price_found = True
+                else:
+                    for pk in price_map:
+                        if cleaned_name == clean_key(pk):
+                            price = price_map[pk]
+                            price_found = True
+                            break
 
-            # 3. Last resort fuzzy/substring match in price map keys (simple heuristic)
-            if not price_found and article:
-                art_up = str(article).strip().upper()
-                for key in price_map:
-                    if key and (key in art_up or art_up in key):
-                        price = price_map[key]
-                        price_found = True
-                        break
+            # 4. Fallback matching via word overlap search in description/name
+            if not price_found and name:
+                p, matched = word_overlap_match(name, price_map)
+                if matched:
+                    price = p
+                    price_found = True
 
-            # If no price found, default to 0.0 or a placeholder
+            # Compute total cost
             total_sum = price * qty
             board_subtotal += total_sum
 
@@ -65,13 +126,14 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                 "price_found": price_found
             })
 
-        grand_total += board_subtotal
-
-        kp_boards.append({
-            "board_name": board_name,
-            "items": board_items,
-            "subtotal": round(board_subtotal, 2)
-        })
+        # Only add the board if it contains at least one parsed item
+        if board_items:
+            grand_total += board_subtotal
+            kp_boards.append({
+                "board_name": board_name,
+                "items": board_items,
+                "subtotal": round(board_subtotal, 2)
+            })
 
     return {
         "boards": kp_boards,
@@ -95,6 +157,7 @@ def export_kp_to_excel(kp_data: Dict[str, Any]) -> bytes:
     font_header = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     font_bold = Font(name="Calibri", size=11, bold=True)
     font_regular = Font(name="Calibri", size=11)
+    font_red = Font(name="Calibri", size=11, color="991B1B", italic=True)
 
     fill_header = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
     fill_subtotal = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
@@ -138,7 +201,7 @@ def export_kp_to_excel(kp_data: Dict[str, Any]) -> bytes:
     current_row = start_row + 1
     global_idx = 1
 
-    for board in kp_data["boards"]:
+    for board in kp_data.get("boards", []):
         # Group/Board header row
         ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=7)
         board_cell = ws.cell(row=current_row, column=1, value=f"Раздел: {board['board_name']}")
@@ -150,7 +213,7 @@ def export_kp_to_excel(kp_data: Dict[str, Any]) -> bytes:
         current_row += 1
 
         # Items
-        for item in board["items"]:
+        for item in board.get("items", []):
             ws.cell(row=current_row, column=1, value=global_idx).alignment = align_center
             ws.cell(row=current_row, column=2, value=item["article"]).alignment = align_left
             ws.cell(row=current_row, column=3, value=item["name"]).alignment = align_left
@@ -169,10 +232,14 @@ def export_kp_to_excel(kp_data: Dict[str, Any]) -> bytes:
             total_cell.alignment = align_right
             total_cell.number_format = "#,##0.00"
 
-            # Apply thin border to row cells
+            # Apply thin border to row cells and color unpriced elements
             for c in range(1, 8):
-                ws.cell(row=current_row, column=c).border = box_border
-                ws.cell(row=current_row, column=c).font = font_regular
+                cell = ws.cell(row=current_row, column=c)
+                cell.border = box_border
+                if not item["price_found"]:
+                    cell.font = font_red
+                else:
+                    cell.font = font_regular
 
             ws.row_dimensions[current_row].height = 20
             current_row += 1
@@ -205,7 +272,7 @@ def export_kp_to_excel(kp_data: Dict[str, Any]) -> bytes:
     total_cell_lbl.alignment = align_right
     total_cell_lbl.fill = fill_total
 
-    total_cell_val = ws.cell(row=current_row, column=7, value=kp_data["grand_total"])
+    total_cell_val = ws.cell(row=current_row, column=7, value=kp_data.get("grand_total", 0.0))
     total_cell_val.font = font_bold
     total_cell_val.alignment = align_right
     total_cell_val.number_format = "#,##0.00"
