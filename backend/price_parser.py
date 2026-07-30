@@ -1,5 +1,5 @@
 import openpyxl
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import io
 import re
 
@@ -11,15 +11,16 @@ def clean_key(val: Any) -> str:
     s = str(val).strip().upper()
     return re.sub(r'[^A-Z0-9А-Я]', '', s)
 
-def parse_price_list(file_bytes: bytes) -> Dict[str, float]:
+def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = None) -> Dict[str, float]:
     """
-    Parses a CHINT Price List Excel file (.xlsx) and returns a dictionary
+    Parses a Price List Excel file (.xlsx) and returns a dictionary (or updates existing dictionary)
     mapping cleaned articles or cleaned names to prices with VAT.
     """
+    if price_map is None:
+        price_map = {}
+
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     sheet = wb.active
-
-    price_map = {}
 
     # Identify key columns
     col_article_idx = None
@@ -28,8 +29,8 @@ def parse_price_list(file_bytes: bytes) -> Dict[str, float]:
 
     rows = list(sheet.iter_rows(values_only=True))
 
-    # Look for header row in the first 25 rows
-    for r_idx, row in enumerate(rows[:25]):
+    # Look for header row in the first 35 rows
+    for r_idx, row in enumerate(rows[:35]):
         row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
 
         # Look for headers
