@@ -1,16 +1,21 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import os
+import io
+from typing import Dict, Any
 
 from backend.pdf_parser import extract_text_from_pdf
 from backend.bom_parser import analyze_equipment
+from backend.spec_parser import parse_specification
+from backend.price_parser import parse_price_list
+from backend.kp_generator import generate_preliminary_kp, export_kp_to_excel
 
 app = FastAPI(
     title="Service for generating commercial offers (КП) for switchboard equipment",
-    description="Backend for extracting PDF text and managing commercial offers.",
-    version="1.1.0"
+    description="Backend for extracting PDF text and managing commercial offers with Excel parsing support.",
+    version="1.2.0"
 )
 
 # Enable CORS for frontend integration
@@ -65,6 +70,58 @@ async def upload_pdf(file: UploadFile = File(...)):
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process PDF file: {str(e)}")
+
+@app.post("/api/generate-kp")
+async def generate_kp(
+    specification: UploadFile = File(...),
+    pricelist: UploadFile = File(...)
+):
+    """
+    Accepts technical specification Excel and CHINT Price List Excel.
+    Extracts positions, matches articles/names, calculates subtotals and grand total,
+    and returns a structured JSON payload ready for table rendering.
+    """
+    if not specification.filename.lower().endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Specification file must be an Excel spreadsheet (.xlsx).")
+    if not pricelist.filename.lower().endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Price list file must be an Excel spreadsheet (.xlsx).")
+
+    try:
+        spec_bytes = await specification.read()
+        price_bytes = await pricelist.read()
+
+        # 1. Parse technical specification
+        boards = parse_specification(spec_bytes)
+
+        # 2. Parse price list
+        price_map = parse_price_list(price_bytes)
+
+        # 3. Generate preliminary Commercial Proposal (KP)
+        kp_data = generate_preliminary_kp(boards, price_map)
+
+        return JSONResponse(content={
+            "status": "success",
+            "specification_file": specification.filename,
+            "pricelist_file": pricelist.filename,
+            "kp": kp_data
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate KP: {str(e)}")
+
+@app.post("/api/export-kp")
+async def export_kp(kp_data: Dict[str, Any] = Body(...)):
+    """
+    Accepts KP JSON representation and exports it to a highly polished and styled Excel file.
+    """
+    try:
+        excel_bytes = export_kp_to_excel(kp_data)
+        return StreamingResponse(
+            io.BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=preliminary_commercial_proposal.xlsx"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to export KP: {str(e)}")
 
 # Mount frontend files to serve the static SPA
 # In production/deployment, static files can be served by FastAPI or configured otherwise
