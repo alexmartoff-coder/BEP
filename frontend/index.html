@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Генератор КП | Электрощитовое оборудование</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="app-header">
+        <div class="container">
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M13 2L3 14H12L11 22L21 10H12L13 2Z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                </svg>
+                <span>ЭнергоКП</span>
+            </div>
+            <span class="badge">Стартовая версия v1.0</span>
+        </div>
+    </header>
+
+    <main class="container main-content">
+        <section class="intro">
+            <h1>Генератор коммерческих предложений</h1>
+            <p class="subtitle">Загрузите техническое задание или спецификацию в формате PDF, чтобы автоматически извлечь позиции и составить коммерческое предложение.</p>
+        </section>
+
+        <section class="uploader-section">
+            <div class="upload-card" id="drop-zone">
+                <div class="upload-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M7 16V4M7 4L3 8M7 4L11 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M17 8V20M17 20L13 16M17 20L21 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+                <h3>Перетащите файл спецификации сюда</h3>
+                <p>или выберите файл на компьютере (поддерживаются только .pdf файлы)</p>
+
+                <input type="file" id="file-input" accept=".pdf" style="display: none;">
+                <button class="btn btn-primary" id="select-btn">Выбрать PDF-файл</button>
+            </div>
+        </section>
+
+        <section class="status-section hidden" id="status-card">
+            <div class="status-card">
+                <div class="spinner" id="loader"></div>
+                <div class="status-info">
+                    <h4 id="status-title">Файл загружается...</h4>
+                    <p id="status-subtitle">Пожалуйста, подождите.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="results-section hidden" id="results-card">
+            <div class="results-grid">
+                <!-- Left panel: Extracted Text -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>Извлечённый текст (заглушка)</h2>
+                    </div>
+                    <div class="panel-body">
+                        <pre id="extracted-text-viewer">Текст не извлечён.</pre>
+                    </div>
+                </div>
+
+                <!-- Right panel: Parsed Items JSON -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>Распознанное оборудование</h2>
+                    </div>
+                    <div class="panel-body">
+                        <table class="items-table" id="items-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Наименование оборудования</th>
+                                    <th class="text-right">Кол-во</th>
+                                    <th>Ед. изм.</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Dinamically inserted -->
+                            </tbody>
+                        </table>
+                        <div class="json-toggle">
+                            <button class="btn btn-outline btn-sm" id="toggle-json-btn">Показать исходный JSON</button>
+                        </div>
+                        <pre class="json-viewer hidden" id="json-viewer"></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <div class="container text-center">
+            <p>&copy; 2025 ЭнергоКП. Все права защищены. Сервис автоматизации подбора электрощитового оборудования.</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
