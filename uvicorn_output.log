@@ -1,12 +1,13 @@
-INFO:     Started server process [137697]
+INFO:     Started server process [179986]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:32946 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:32946 - "GET /style.css HTTP/1.1" 200 OK
-INFO:     127.0.0.1:32952 - "GET /script.js HTTP/1.1" 200 OK
-INFO:     127.0.0.1:32952 - "POST /api/generate-kp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55144 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55144 - "GET /style.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55154 - "GET /BEP.png HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55160 - "GET /script.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55160 - "POST /api/generate-kp HTTP/1.1" 200 OK
 INFO:     Shutting down
 INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
-INFO:     Finished server process [137697]
+INFO:     Finished server process [179986]
