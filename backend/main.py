@@ -4,18 +4,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, StreamingResponse
 import os
 import io
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from backend.pdf_parser import extract_text_from_pdf
-from backend.bom_parser import analyze_equipment
-from backend.spec_parser import parse_specification
+from backend.bom_parser import analyze_equipment, parse_bom_from_text
 from backend.price_parser import parse_price_list
 from backend.kp_generator import generate_preliminary_kp, export_kp_to_excel
 
 app = FastAPI(
     title="Service for generating commercial offers (КП) for switchboard equipment",
-    description="Backend for extracting PDF text and managing commercial offers with Excel parsing support.",
-    version="1.2.0"
+    description="Backend for extracting PDF text and managing commercial offers directly against Excel price lists.",
+    version="2.0.0"
 )
 
 # Enable CORS for frontend integration
@@ -74,35 +73,43 @@ async def upload_pdf(file: UploadFile = File(...)):
 @app.post("/api/generate-kp")
 async def generate_kp(
     specification: UploadFile = File(...),
-    pricelist: UploadFile = File(...)
+    pricelists: List[UploadFile] = File(...)
 ):
     """
-    Accepts technical specification Excel and CHINT Price List Excel.
-    Extracts positions, matches articles/names, calculates subtotals and grand total,
-    and returns a structured JSON payload ready for table rendering.
+    Real business-workflow endpoint:
+    Accepts PDF technical document specification AND one or more Excel price list sheets.
+    Parses PDF text, extracts BOM, compiles lookup prices map from pricelists, matches,
+    and returns a structured Commercial Proposal JSON.
     """
-    if not specification.filename.lower().endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="Specification file must be an Excel spreadsheet (.xlsx).")
-    if not pricelist.filename.lower().endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="Price list file must be an Excel spreadsheet (.xlsx).")
+    if not specification.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Specification file must be a PDF document.")
+
+    for p_list in pricelists:
+        if not p_list.filename.lower().endswith(('.xlsx', '.xls')):
+            raise HTTPException(status_code=400, detail="Price lists must be Excel spreadsheets (.xlsx, .xls).")
 
     try:
-        spec_bytes = await specification.read()
-        price_bytes = await pricelist.read()
+        # 1. Parse PDF specification text
+        pdf_bytes = await specification.read()
+        extracted_text = extract_text_from_pdf(pdf_bytes)
 
-        # 1. Parse technical specification
-        boards = parse_specification(spec_bytes)
+        # 2. Extract structured equipment groups from text
+        boards = parse_bom_from_text(extracted_text)
 
-        # 2. Parse price list
-        price_map = parse_price_list(price_bytes)
+        # 3. Parse and merge all uploaded price lists
+        price_map = {}
+        for p_list in pricelists:
+            price_bytes = await p_list.read()
+            price_map = parse_price_list(price_bytes, price_map)
 
-        # 3. Generate preliminary Commercial Proposal (KP)
+        # 4. Generate the preliminary commercial proposal
         kp_data = generate_preliminary_kp(boards, price_map)
 
         return JSONResponse(content={
             "status": "success",
             "specification_file": specification.filename,
-            "pricelist_file": pricelist.filename,
+            "pricelist_count": len(pricelists),
+            "extracted_text": extracted_text,
             "kp": kp_data
         })
     except Exception as e:
