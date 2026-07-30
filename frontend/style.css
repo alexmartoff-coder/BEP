@@ -1,0 +1,328 @@
+:root {
+    --primary-color: #3b82f6;
+    --primary-hover: #2563eb;
+    --bg-color: #f8fafc;
+    --card-bg: #ffffff;
+    --text-main: #1e293b;
+    --text-muted: #64748b;
+    --border-color: #e2e8f0;
+    --success-color: #10b981;
+    --error-color: #ef4444;
+    --radius: 8px;
+    --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --font-family: 'Inter', sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: var(--font-family);
+    background-color: var(--bg-color);
+    color: var(--text-main);
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+    width: 100%;
+}
+
+.text-center {
+    text-align: center;
+}
+
+.text-right {
+    text-align: right;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Header */
+.app-header {
+    background-color: var(--card-bg);
+    border-bottom: 1px solid var(--border-color);
+    padding: 15px 0;
+}
+
+.app-header .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
+.badge {
+    background-color: #eff6ff;
+    color: var(--primary-color);
+    padding: 4px 12px;
+    border-radius: 9999px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border: 1px solid #dbeafe;
+}
+
+/* Main Content */
+.main-content {
+    flex: 1;
+    padding-top: 40px;
+    padding-bottom: 40px;
+}
+
+.intro {
+    text-align: center;
+    margin-bottom: 40px;
+}
+
+.intro h1 {
+    font-size: 2.25rem;
+    font-weight: 800;
+    margin-bottom: 12px;
+    color: #0f172a;
+}
+
+.intro .subtitle {
+    font-size: 1.1rem;
+    color: var(--text-muted);
+    max-width: 700px;
+    margin: 0 auto;
+}
+
+/* Uploader Section */
+.uploader-section {
+    margin-bottom: 30px;
+}
+
+.upload-card {
+    background-color: var(--card-bg);
+    border: 2px dashed var(--border-color);
+    border-radius: var(--radius);
+    padding: 50px 30px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.upload-card:hover, .upload-card.dragover {
+    border-color: var(--primary-color);
+    background-color: #f0f7ff;
+}
+
+.upload-icon {
+    color: var(--primary-color);
+    margin-bottom: 15px;
+}
+
+.upload-card h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.upload-card p {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    margin-bottom: 25px;
+}
+
+/* Buttons */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 20px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    border-radius: var(--radius);
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    font-family: inherit;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.btn-primary:hover {
+    background-color: var(--primary-hover);
+}
+
+.btn-outline {
+    background-color: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+}
+
+.btn-outline:hover {
+    background-color: #f1f5f9;
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+}
+
+/* Status Card */
+.status-section {
+    margin-bottom: 35px;
+}
+
+.status-card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    box-shadow: var(--shadow);
+}
+
+.spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid #e2e8f0;
+    border-top-color: var(--primary-color);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+.status-info h4 {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.status-info p {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Results Grid */
+.results-section {
+    margin-top: 40px;
+}
+
+.results-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 25px;
+}
+
+@media(max-width: 768px) {
+    .results-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.panel {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.panel-header {
+    border-bottom: 1px solid var(--border-color);
+    padding: 15px 20px;
+    background-color: #fafafa;
+}
+
+.panel-header h2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.panel-body {
+    padding: 20px;
+    flex: 1;
+}
+
+#extracted-text-viewer {
+    white-space: pre-wrap;
+    font-family: inherit;
+    font-size: 0.95rem;
+    color: #334155;
+    background-color: #f8fafc;
+    border: 1px solid var(--border-color);
+    padding: 15px;
+    border-radius: 6px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.items-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin-bottom: 20px;
+}
+
+.items-table th, .items-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.items-table th {
+    background-color: #f1f5f9;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.items-table tbody tr:hover {
+    background-color: #f8fafc;
+}
+
+.json-toggle {
+    margin-top: 15px;
+}
+
+.json-viewer {
+    background-color: #1e293b;
+    color: #f8fafc;
+    padding: 15px;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 0.85rem;
+    max-height: 250px;
+    overflow-y: auto;
+    margin-top: 15px;
+    white-space: pre-wrap;
+}
+
+/* Footer */
+.app-footer {
+    background-color: var(--card-bg);
+    border-top: 1px solid var(--border-color);
+    padding: 20px 0;
+    margin-top: 60px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
