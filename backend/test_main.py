@@ -2,6 +2,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 from backend.main import app
+from backend.bom_parser import analyze_equipment
 
 client = TestClient(app)
 
@@ -19,15 +20,34 @@ def test_upload_non_pdf():
     assert response.status_code == 400
     assert "Invalid file type" in response.json()["detail"]
 
-def test_upload_pdf_success():
-    """Test that uploading a PDF successfully returns mock extracted data."""
-    # Create a mock PDF file payload
-    files = {"file": ("spec.pdf", b"%PDF-1.4 mock content", "application/pdf")}
-    response = client.post("/api/upload-pdf", files=files)
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "success"
-    assert data["filename"] == "spec.pdf"
-    assert "extracted_text" in data
-    assert "items" in data
-    assert len(data["items"]) == 4
+def test_bom_parser_helpers():
+    """Test the parser regexes with sample BOM text rows."""
+    sample_text = (
+        "Автоматический выключатель ВА47-29 3P 16A - 4 шт.\n"
+        "Контактор КМИ-11810 18А - 2 ед.\n"
+        "Реле контроля фаз РНПП-311М - 1 шт.\n"
+        "Шкаф металлический ШЭМ-1 800х600 - 1 шт.\n"
+        "Клемма заземления EK-4 - 10 шт"
+    )
+    equipment = analyze_equipment(sample_text)
+
+    assert len(equipment) == 5
+
+    # Check individual parsed items
+    assert "Автоматический выключатель" in equipment[0]["name"]
+    assert "ВА47-29" in equipment[0]["name"]
+    assert equipment[0]["qty"] == 4
+
+    assert "Контактор" in equipment[1]["name"]
+    assert equipment[1]["qty"] == 2
+
+    assert "Реле / Кнопка / Лампа" in equipment[2]["name"]
+    assert "РНПП-311М" in equipment[2]["name"]
+    assert equipment[2]["qty"] == 1
+
+    assert "Корпус / Шкаф" in equipment[3]["name"]
+    assert "ШЭМ-1" in equipment[3]["name"]
+    assert equipment[3]["qty"] == 1
+
+    assert "Клеммы / Шины" in equipment[4]["name"]
+    assert equipment[4]["qty"] == 10

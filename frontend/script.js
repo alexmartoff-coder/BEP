@@ -106,19 +106,21 @@ document.addEventListener('DOMContentLoaded', () => {
     function displayResults(data) {
         resultsCard.classList.remove('hidden');
 
-        // Show mock extracted text
+        // Show actual or fallback extracted text
         extractedTextViewer.textContent = data.extracted_text || 'Текст пуст.';
 
         // Populate items table
         itemsTableBody.innerHTML = '';
         if (data.items && data.items.length > 0) {
-            data.items.forEach(item => {
+            data.items.forEach((item, index) => {
                 const tr = document.createElement('tr');
+                // Support both .qty and .quantity from backend formats
+                const quantity = item.qty !== undefined ? item.qty : (item.quantity !== undefined ? item.quantity : 1);
                 tr.innerHTML = `
-                    <td>${item.id}</td>
+                    <td>${item.id || (index + 1)}</td>
                     <td><strong>${escapeHtml(item.name)}</strong></td>
-                    <td class="text-right">${item.quantity}</td>
-                    <td>${escapeHtml(item.unit)}</td>
+                    <td class="text-right">${quantity}</td>
+                    <td>${escapeHtml(item.unit || 'шт')}</td>
                 `;
                 itemsTableBody.appendChild(tr);
             });

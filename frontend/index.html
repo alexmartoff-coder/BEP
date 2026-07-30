@@ -16,7 +16,7 @@
                 </svg>
                 <span>ЭнергоКП</span>
             </div>
-            <span class="badge">Стартовая версия v1.0</span>
+            <span class="badge">Стартовая версия v1.1 (с парсером PDF)</span>
         </div>
     </header>
 
@@ -57,17 +57,22 @@
                 <!-- Left panel: Extracted Text -->
                 <div class="panel">
                     <div class="panel-header">
-                        <h2>Извлечённый текст (заглушка)</h2>
+                        <h2>Извлечённый текст спецификации</h2>
+                        <span class="help-text">Текст, распознанный из PDF-документа</span>
                     </div>
                     <div class="panel-body">
-                        <pre id="extracted-text-viewer">Текст не извлечён.</pre>
+                        <details open class="collapsible-text">
+                            <summary class="btn btn-outline btn-sm">Развернуть / Свернуть текст</summary>
+                            <pre id="extracted-text-viewer" style="margin-top:15px;">Текст не извлечён.</pre>
+                        </details>
                     </div>
                 </div>
 
                 <!-- Right panel: Parsed Items JSON -->
                 <div class="panel">
                     <div class="panel-header">
-                        <h2>Распознанное оборудование</h2>
+                        <h2>Распознанное оборудование (BOM)</h2>
+                        <span class="help-text">Найденные позиции электрощитового оборудования</span>
                     </div>
                     <div class="panel-body">
                         <table class="items-table" id="items-table">

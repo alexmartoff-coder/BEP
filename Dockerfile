@@ -9,9 +9,14 @@ ENV PYTHONUNBUFFERED=1 \
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies if any are needed (e.g., git, curl, build-essential)
+# Install system dependencies required for pdf2image, pdfplumber and pytesseract (OCR)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    tesseract-ocr \
+    tesseract-ocr-rus \
+    poppler-utils \
+    libpng-dev \
+    libjpeg-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install python packages
