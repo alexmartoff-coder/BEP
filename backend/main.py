@@ -6,8 +6,8 @@ import os
 import io
 from typing import Dict, Any, List
 
-from backend.pdf_parser import extract_text_from_pdf
-from backend.bom_parser import analyze_equipment, parse_bom_from_text
+from backend.pdf_parser import extract_text_from_pdf, parse_pdf_combined_to_bom
+from backend.bom_parser import analyze_equipment
 from backend.price_parser import parse_price_list
 from backend.kp_generator import generate_preliminary_kp, export_kp_to_excel
 
@@ -26,6 +26,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def convert_boards_to_flat_equipment(boards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Converts structured board groups into a flat equipment list format for backwards compatibility."""
+    flat_items = []
+    item_id = 1
+    for board in boards:
+        for item in board.get("items", []):
+            display_name = item["name"]
+            if item.get("article") and item["article"] not in display_name:
+                display_name = f"{display_name} ({item['article']})"
+            flat_items.append({
+                "id": item_id,
+                "name": display_name,
+                "qty": item["qty"],
+                "quantity": item["qty"],
+                "unit": item.get("unit", "шт")
+            })
+            item_id += 1
+    return flat_items
+
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint for Railway deployment and monitoring."""
@@ -35,6 +54,7 @@ async def health_check():
 async def upload_pdf(file: UploadFile = File(...)):
     """
     Accepts a PDF file, extracts its text content, and detects switchboard equipment positions.
+    Utilizes Gemini Vision API combined with classic text/regex BOM extraction.
     """
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Invalid file type. Only PDF files are allowed.")
@@ -46,8 +66,9 @@ async def upload_pdf(file: UploadFile = File(...)):
         # Extract text from PDF
         extracted_text = extract_text_from_pdf(pdf_bytes)
 
-        # Parse equipment BOM positions
-        equipment = analyze_equipment(extracted_text)
+        # Parse equipment BOM positions using new combined Vision + classic parser
+        boards = await parse_pdf_combined_to_bom(pdf_bytes)
+        equipment = convert_boards_to_flat_equipment(boards)
 
         # If no positions were found, construct some defaults/stubs to avoid showing empty results to users
         if not equipment and "не удалось извлечь" not in extracted_text.lower():
@@ -78,8 +99,8 @@ async def generate_kp(
     """
     Real business-workflow endpoint:
     Accepts PDF technical document specification AND one or more Excel price list sheets.
-    Parses PDF text, extracts BOM, compiles lookup prices map from pricelists, matches,
-    and returns a structured Commercial Proposal JSON.
+    Parses PDF, extracts BOM (via Vision API and classic parser), compiles lookup prices map from pricelists,
+    matches, and returns a structured Commercial Proposal JSON.
     """
     if not specification.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Specification file must be a PDF document.")
@@ -93,8 +114,8 @@ async def generate_kp(
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes)
 
-        # 2. Extract structured equipment groups from text
-        boards = parse_bom_from_text(extracted_text)
+        # 2. Extract structured equipment groups from text and Vision API combined
+        boards = await parse_pdf_combined_to_bom(pdf_bytes)
 
         # 3. Parse and merge all uploaded price lists
         price_map = {}
