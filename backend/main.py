@@ -48,7 +48,7 @@ def convert_boards_to_flat_equipment(boards: List[Dict[str, Any]]) -> List[Dict[
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint for Railway deployment and monitoring."""
-    return {"status": "ok", "service": "bep-backend"}
+    return {"status": "ok", "service": "BEP"}
 
 @app.post("/api/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
