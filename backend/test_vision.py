@@ -5,31 +5,36 @@ import asyncio
 from backend.vision_parser import parse_equipment_from_pdf, compute_pdf_md5
 from backend.pdf_parser import parse_pdf_combined_to_bom
 
-# Mock response class
+# Mock response class for the new google-genai SDK
 class MockResponse:
-    def __init__(self, text):
-        self.text = text
+    def __init__(self, parsed_data):
+        self.parsed = parsed_data
+
+class MockItem:
+    def __init__(self, article, name, qty, unit):
+        self.article = article
+        self.name = name
+        self.qty = qty
+        self.unit = unit
 
 def test_vision_parser_success():
-    """Test successful Vision parser extraction and parsing."""
-    mock_json_response = """
-    [
-      {"article": "CHINT-001", "name": "Контактор", "qty": 3, "unit": "шт"},
-      {"article": "CHINT-002", "name": "Реле времени", "qty": 1, "unit": "шт"}
+    """Test successful Vision parser extraction and parsing with google-genai Client."""
+    mock_response_data = [
+        MockItem(article="CHINT-001", name="Контактор", qty=3, unit="шт"),
+        MockItem(article="CHINT-002", name="Реле времени", qty=1, unit="шт")
     ]
-    """
 
-    with patch("google.generativeai.GenerativeModel") as mock_model_class, \
+    with patch("google.genai.Client") as mock_client_class, \
          patch("backend.vision_parser.convert_from_path") as mock_convert, \
          patch.dict(os.environ, {"GOOGLE_API_KEY": "fake_key"}):
 
         # Mock convert_from_path to return some dummy objects representing images
         mock_convert.return_value = [MagicMock(), MagicMock()]
 
-        # Mock GenerativeModel instance
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value = MockResponse(mock_json_response)
-        mock_model_class.return_value = mock_model
+        # Mock genai.Client instance
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = MockResponse(mock_response_data)
+        mock_client_class.return_value = mock_client
 
         # Create a dummy PDF file
         pdf_path = "/tmp/mock_test_vision.pdf"
@@ -51,7 +56,6 @@ def test_vision_parser_success():
             assert result[1]["qty"] == 1
 
             # Test Cache Hit
-            # If we call it again, convert_from_path should not be called again
             mock_convert.reset_mock()
             cached_result = asyncio.run(parse_equipment_from_pdf(pdf_path))
             assert cached_result == result
