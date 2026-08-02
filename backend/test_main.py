@@ -14,7 +14,7 @@ def test_health_check():
     """Test that the health check returns 200 and correct status."""
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "bep-backend"}
+    assert response.json() == {"status": "ok", "service": "BEP"}
 
 def test_upload_non_pdf():
     """Test that uploading a non-PDF file to PDF endpoint returns a 400 error."""
