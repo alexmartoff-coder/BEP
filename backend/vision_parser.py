@@ -114,7 +114,7 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
 """
         contents = [prompt] + images_to_send
 
-        logger.info(f"[Vision] Sending request to model="gemini-2.5-flash" with {len(images_to_send)} images...")
+        logger.info(f'[Vision] Sending request to model="gemini-2.5-flash" with {len(images_to_send)} images...')
 
         # Set up Structured Output configuration using new google.genai types
         schema = {
