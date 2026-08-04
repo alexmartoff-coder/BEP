@@ -68,8 +68,8 @@ def clean_json_response(text: str) -> str:
 
 async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """
-    Extracts equipment from PDF using OpenRouter API with Qwen VL Plus model (primary)
-    and Gemma 4 (fallback if 404).
+    Extracts equipment from PDF using OpenRouter API with google/gemma-4-26b-a4b-it:free model (primary)
+    and google/gemma-4-31b-it:free (fallback if 404/429).
     Converts PDF pages into PIL images, sends them as base64 data URLs,
     and returns a parsed list of equipment dictionaries.
     """
@@ -105,34 +105,30 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         if len(images) > 10:
             logger.info(f"[Vision] PDF has {len(images)} pages. Limiting Vision API processing to first 10 pages.")
 
-        # Prepare system instructions / prompt
+        # Prepare system instructions / prompt as requested
         prompt = """
-Ты — ассистент по распознаванию электрощитового оборудования из проектной документации.
+Ты — инженер по щитовому оборудованию. Тебе дана однолинейная схема электрического щита.
 
-В PDF есть разные разделы: общие данные, описания, схемы, таблицы с характеристиками ДГУ.
+Извлеки ТОЛЬКО автоматические выключатели и корпус щита (если указан).
 
-Твоя задача — найти и извлечь ТОЛЬКО оборудование, которое входит в коммерческое предложение.
+Для каждого автомата укажи:
+- ток (А)
+- полюса (1P или 3P)
+- количество одинаковых
 
-Игнорируй:
-- Текстовые описания задач (например, "Настроить АВР...")
-- Строки с L1-L2-L3
-- Технические расчёты (сопротивление заземления, формулы)
-- Общие данные о проекте
-- Строки с нулевыми ценами
+ИГНОРИРУЙ:
+- подписи QF, QF1, QF2, QF3...
+- адреса, штампы, примечания, кабели, уставки
 
-Ищи:
-- Артикулы в формате: CHINT-XXX, АД-500С-Т400-2РНМ9, или любые буквенно-цифровые коды
-- Названия оборудования: "Дизель генератор", "Автоматический выключатель", "Контактор", "УЗО", "Шкаф", "ДГУ"
-- Количество (цифры рядом с названием)
-- Единицу измерения: "шт", "компл", "м"
+Группируй одинаковые аппараты в одну позицию с qty.
 
-Выведи результат СТРОГО в формате JSON-массива без какого-либо дополнительного текста, markdown-разметки или объяснений:
-[
-  {"article": "АД-500С-Т400-2РНМ9", "name": "Дизель генератор 500 кВт", "qty": 1, "unit": "шт"},
-  {"article": "Evotec TCU368D", "name": "Генератор Evotec 500 кВт", "qty": 1, "unit": "шт"}
-]
-
-Если сомневаешься — пропускай позицию. Лучше меньше, но точнее.
+Ответ строго JSON:
+{
+  "shield_name": "название щита если есть",
+  "items": [
+    {"article": "артикул или код если указан", "name": "Авт. выкл. 3P 125А", "current_a": 125, "poles": "3P", "qty": 6}
+  ]
+}
 """
         # Format payload in OpenAI Vision API format
         content_payload = [{"type": "text", "text": prompt}]
@@ -146,11 +142,14 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
             })
 
         # Try primary model first
+        primary_model = "google/gemma-4-26b-a4b-it:free"
+        fallback_model = "google/gemma-4-31b-it:free"
+
         try:
-            logger.info(f"[Vision] Sending request to OpenRouter + qwen-vl-plus with {len(images_to_send)} images...")
+            logger.info(f"[Vision] Sending request to OpenRouter + {primary_model} with {len(images_to_send)} images...")
             response = await asyncio.to_thread(
                 client.chat.completions.create,
-                model="qwen/qwen-vl-plus:free",
+                model=primary_model,
                 messages=[
                     {
                         "role": "user",
@@ -160,18 +159,18 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                 temperature=0.1
             )
         except Exception as e:
-            # Check for 404 Not Found error to invoke fallback
-            is_404 = False
-            if hasattr(e, "status_code") and e.status_code == 404:
-                is_404 = True
-            elif "404" in str(e) or "NOT_FOUND" in str(e).upper():
-                is_404 = True
+            # Check for 404 Not Found or 429 Too Many Requests to invoke fallback
+            is_fallback_trigger = False
+            if hasattr(e, "status_code") and e.status_code in [404, 429]:
+                is_fallback_trigger = True
+            elif any(indicator in str(e).upper() or indicator in str(e) for indicator in ["404", "429", "RESOURCE_EXHAUSTED", "RATE_LIMIT", "LIMIT_EXCEEDED", "NOT_FOUND"]):
+                is_fallback_trigger = True
 
-            if is_404:
-                logger.warning(f"[Vision] Primary model qwen/qwen-vl-plus:free returned 404. Attempting fallback model google/gemma-4-31b-it:free...")
+            if is_fallback_trigger:
+                logger.warning(f"[Vision] Model {primary_model} failed (404/429). Attempting fallback model {fallback_model}...")
                 response = await asyncio.to_thread(
                     client.chat.completions.create,
-                    model="google/gemma-4-31b-it:free",
+                    model=fallback_model,
                     messages=[
                         {
                             "role": "user",
@@ -192,32 +191,48 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         cleaned_text = clean_json_response(raw_text)
         logger.debug(f"Raw response from OpenRouter: {cleaned_text}")
 
-        parsed_data = json.loads(cleaned_text)
-        if not isinstance(parsed_data, list):
-            logger.warning("[Vision] OpenRouter response is not a list. Attempting to wrap it.")
-            if isinstance(parsed_data, dict) and "items" in parsed_data:
-                parsed_data = parsed_data["items"]
-            else:
-                parsed_data = [parsed_data]
+        parsed_json = json.loads(cleaned_text)
 
-        # Standardize results
+        # Resolve parsed_json into list of items
+        items_list = []
+        if isinstance(parsed_json, dict):
+            if "items" in parsed_json:
+                items_list = parsed_json["items"]
+            else:
+                items_list = [parsed_json]
+        elif isinstance(parsed_json, list):
+            items_list = parsed_json
+
+        # Standardize results and normalize naming as requested
         standardized_items = []
-        for item in parsed_data:
+        for item in items_list:
             if not isinstance(item, dict):
                 continue
-            article = str(item.get("article", "")).strip()
-            name = str(item.get("name", "")).strip()
+
+            poles = str(item.get("poles", "")).strip()
+            current_a = str(item.get("current_a", "")).strip()
+
+            # Normalize naming: "Авт. выкл. {poles} {current_a}А"
+            if poles and current_a:
+                # Ensure current_a does not already end with Russian 'А' or English 'A' before appending
+                clean_current = current_a.rstrip("ААaA ")
+                normalized_name = f"Авт. выкл. {poles} {clean_current}А"
+            else:
+                normalized_name = str(item.get("name", "Авт. выкл.")).strip()
+
             qty = item.get("qty", 1)
             try:
                 qty = int(qty)
             except (ValueError, TypeError):
                 qty = 1
+
+            article = str(item.get("article", "")).strip()
             unit = str(item.get("unit", "шт")).strip()
 
-            if article or name:
+            if normalized_name:
                 standardized_items.append({
                     "article": article,
-                    "name": name,
+                    "name": normalized_name,
                     "qty": qty,
                     "unit": unit
                 })
