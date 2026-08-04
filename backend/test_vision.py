@@ -5,36 +5,39 @@ import asyncio
 from backend.vision_parser import parse_equipment_from_pdf, compute_pdf_md5
 from backend.pdf_parser import parse_pdf_combined_to_bom
 
-# Mock response class for the new google-genai SDK
-class MockResponse:
-    def __init__(self, parsed_data):
-        self.parsed = parsed_data
+# Mock response class for OpenAI chat completion
+class MockMessage:
+    def __init__(self, content):
+        self.content = content
 
-class MockItem:
-    def __init__(self, article, name, qty, unit):
-        self.article = article
-        self.name = name
-        self.qty = qty
-        self.unit = unit
+class MockChoice:
+    def __init__(self, content):
+        self.message = MockMessage(content)
+
+class MockCompletionResponse:
+    def __init__(self, content):
+        self.choices = [MockChoice(content)]
 
 def test_vision_parser_success():
-    """Test successful Vision parser extraction and parsing with google-genai Client."""
-    mock_response_data = [
-        MockItem(article="CHINT-001", name="Контактор", qty=3, unit="шт"),
-        MockItem(article="CHINT-002", name="Реле времени", qty=1, unit="шт")
+    """Test successful Vision parser extraction and parsing with OpenRouter client."""
+    mock_json_response = """
+    [
+      {"article": "CHINT-001", "name": "Контактор", "qty": 3, "unit": "шт"},
+      {"article": "CHINT-002", "name": "Реле времени", "qty": 1, "unit": "шт"}
     ]
+    """
 
-    with patch("google.genai.Client") as mock_client_class, \
+    with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
          patch("backend.vision_parser.convert_from_path") as mock_convert, \
-         patch.dict(os.environ, {"GOOGLE_API_KEY": "fake_key"}):
+         patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake_key"}):
 
         # Mock convert_from_path to return some dummy objects representing images
         mock_convert.return_value = [MagicMock(), MagicMock()]
 
-        # Mock genai.Client instance
+        # Mock OpenAI Client instance
         mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = MockResponse(mock_response_data)
-        mock_client_class.return_value = mock_client
+        mock_client.chat.completions.create.return_value = MockCompletionResponse(mock_json_response)
+        mock_openai_class.return_value = mock_client
 
         # Create a dummy PDF file
         pdf_path = "/tmp/mock_test_vision.pdf"
@@ -66,8 +69,8 @@ def test_vision_parser_success():
                 os.remove(pdf_path)
 
 def test_vision_parser_no_api_key():
-    """Test that vision parser returns empty list if GOOGLE_API_KEY is not set."""
-    # Ensure GOOGLE_API_KEY is not present in mocked env
+    """Test that vision parser returns empty list if OPENROUTER_API_KEY is not set."""
+    # Ensure OPENROUTER_API_KEY is not present in mocked env
     with patch.dict(os.environ, {}, clear=True):
         result = asyncio.run(parse_equipment_from_pdf("some_path.pdf"))
         assert result == []

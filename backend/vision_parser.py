@@ -3,10 +3,11 @@ import json
 import hashlib
 import logging
 import asyncio
+import base64
+import io
 from typing import List, Dict, Any
 from pdf2image import convert_from_path
-from google import genai
-from google.genai import types
+from openai import OpenAI
 
 logger = logging.getLogger("vision_parser")
 
@@ -47,10 +48,28 @@ def compute_pdf_md5(pdf_path: str) -> str:
         # Fall back to file path and size if MD5 fails
         return f"{pdf_path}_{os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0}"
 
+def pil_image_to_base64(img) -> str:
+    """Converts a PIL Image to a base64 encoded PNG string."""
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+def clean_json_response(text: str) -> str:
+    """Strips markdown code blocks and clean whitespaces to extract raw JSON."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
 async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """
-    Extracts equipment from PDF using Gemini Vision API via google.genai SDK.
-    Converts PDF pages into PIL images, sends them to gemini-2.0-flash with a structured response schema,
+    Extracts equipment from PDF using OpenRouter API with Qwen 2.5 VL model.
+    Converts PDF pages into PIL images, sends them as base64 data URLs to Qwen 2.5 VL,
     and returns a parsed list of equipment dictionaries.
     """
     # 1. Check cache first
@@ -60,14 +79,17 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         return _memory_cache[file_hash]
 
     # 2. Check API Key
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        logger.error("[Vision] GOOGLE_API_KEY environment variable is not set. Skipping Gemini Vision parsing.")
+        logger.error("[Vision] OPENROUTER_API_KEY environment variable is not set. Skipping OpenRouter Vision parsing.")
         return []
 
     try:
-        # Initialize Google GenAI client
-        client = genai.Client(api_key=api_key)
+        # Initialize OpenAI client pointed to OpenRouter
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key
+        )
 
         # Convert PDF to PIL images in an executor to avoid blocking the event loop
         logger.info(f"[Vision] Converting PDF {pdf_path} to images...")
@@ -77,13 +99,12 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
             logger.warning(f"[Vision] No pages extracted from PDF: {pdf_path}")
             return []
 
-        # We can limit the number of pages to avoid hitting payload size/token limits (e.g. max first 10 pages)
-        # 10 pages is generally plenty for schematic spec sheets.
+        # Limit pages to avoid huge payloads (e.g. max first 10 pages)
         images_to_send = images[:10]
         if len(images) > 10:
             logger.info(f"[Vision] PDF has {len(images)} pages. Limiting Vision API processing to first 10 pages.")
 
-        # Prepare multimodal request contents: prompt and images
+        # Prepare system instructions / prompt
         prompt = """
 Ты — ассистент по распознаванию электрощитового оборудования из проектной документации.
 
@@ -104,7 +125,7 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
 - Количество (цифры рядом с названием)
 - Единицу измерения: "шт", "компл", "м"
 
-Выведи результат строго в JSON-массиве:
+Выведи результат СТРОГО в формате JSON-массива без какого-либо дополнительного текста, markdown-разметки или объяснений:
 [
   {"article": "АД-500С-Т400-2РНМ9", "name": "Дизель генератор 500 кВт", "qty": 1, "unit": "шт"},
   {"article": "Evotec TCU368D", "name": "Генератор Evotec 500 кВт", "qty": 1, "unit": "шт"}
@@ -112,66 +133,62 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
 
 Если сомневаешься — пропускай позицию. Лучше меньше, но точнее.
 """
-        contents = [prompt] + images_to_send
+        # Format payload in OpenAI Vision API format
+        content_payload = [{"type": "text", "text": prompt}]
+        for img in images_to_send:
+            b64_str = pil_image_to_base64(img)
+            content_payload.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{b64_str}"
+                }
+            })
 
-        logger.info(f"[Vision] Sending request to gemini-2.0-flash with {len(images_to_send)} images...")
+        logger.info(f"[Vision] Sending request to OpenRouter + qwen2.5-vl with {len(images_to_send)} images...")
 
-        # Set up Structured Output configuration using new google.genai types
-        schema = {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "article": {"type": "string"},
-                    "name": {"type": "string"},
-                    "qty": {"type": "integer"},
-                    "unit": {"type": "string"}
-                },
-                "required": ["article", "name", "qty", "unit"]
-            }
-        }
-
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=schema
-        )
-
-        # Call Generate Content in executor to avoid blocking thread
+        # Call chat completions API
         response = await asyncio.to_thread(
-            client.models.generate_content,
-            model="gemini-2.0-flash",
-            contents=contents,
-            config=config
+            client.chat.completions.create,
+            model="qwen/qwen2.5-vl-72b-instruct:free",
+            messages=[
+                {
+                    "role": "user",
+                    "content": content_payload
+                }
+            ],
+            temperature=0.1
         )
 
-        parsed_data = response.parsed
-        if not parsed_data:
-            logger.warning("[Vision] Gemini Vision API returned an empty or unparsed response.")
+        if not response or not response.choices or not response.choices[0].message.content:
+            logger.warning("[Vision] OpenRouter API returned an empty response.")
             return []
 
-        # Standardize results from parsed structure
+        # Parse output JSON
+        raw_text = response.choices[0].message.content
+        cleaned_text = clean_json_response(raw_text)
+        logger.debug(f"Raw response from OpenRouter + qwen2.5-vl: {cleaned_text}")
+
+        parsed_data = json.loads(cleaned_text)
+        if not isinstance(parsed_data, list):
+            logger.warning("[Vision] OpenRouter response is not a list. Attempting to wrap it.")
+            if isinstance(parsed_data, dict) and "items" in parsed_data:
+                parsed_data = parsed_data["items"]
+            else:
+                parsed_data = [parsed_data]
+
+        # Standardize results
         standardized_items = []
         for item in parsed_data:
-            if hasattr(item, "model_dump"):
-                item_dict = item.model_dump()
-            elif isinstance(item, dict):
-                item_dict = item
-            else:
-                item_dict = {
-                    "article": getattr(item, "article", ""),
-                    "name": getattr(item, "name", ""),
-                    "qty": getattr(item, "qty", 1),
-                    "unit": getattr(item, "unit", "шт")
-                }
-
-            article = str(item_dict.get("article", "")).strip()
-            name = str(item_dict.get("name", "")).strip()
-            qty = item_dict.get("qty", 1)
+            if not isinstance(item, dict):
+                continue
+            article = str(item.get("article", "")).strip()
+            name = str(item.get("name", "")).strip()
+            qty = item.get("qty", 1)
             try:
                 qty = int(qty)
             except (ValueError, TypeError):
                 qty = 1
-            unit = str(item_dict.get("unit", "шт")).strip()
+            unit = str(item.get("unit", "шт")).strip()
 
             if article or name:
                 standardized_items.append({
@@ -181,7 +198,7 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                     "unit": unit
                 })
 
-        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items from Gemini Vision API.")
+        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter + qwen2.5-vl.")
 
         # Store to cache
         if standardized_items:
@@ -191,6 +208,6 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         return standardized_items
 
     except Exception as e:
-        logger.error(f"[Vision] Gemini Vision API parsing failed: {e}", exc_info=True)
+        logger.error(f"[Vision] OpenRouter + qwen2.5-vl Vision API parsing failed: {e}", exc_info=True)
         # Log error and return empty list to not break the pipeline
         return []
