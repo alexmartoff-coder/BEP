@@ -50,7 +50,7 @@ def compute_pdf_md5(pdf_path: str) -> str:
 async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """
     Extracts equipment from PDF using Gemini Vision API via google.genai SDK.
-    Converts PDF pages into PIL images, sends them to gemini-1.5-flash with a structured response schema,
+    Converts PDF pages into PIL images, sends them to gemini-2.5-flash with a structured response schema,
     and returns a parsed list of equipment dictionaries.
     """
     # 1. Check cache first
