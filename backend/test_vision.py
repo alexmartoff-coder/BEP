@@ -19,12 +19,15 @@ class MockCompletionResponse:
         self.choices = [MockChoice(content)]
 
 def test_vision_parser_success():
-    """Test successful Vision parser extraction and parsing with OpenRouter client."""
+    """Test successful Vision parser extraction and parsing with OpenRouter client and new schema."""
     mock_json_response = """
-    [
-      {"article": "CHINT-001", "name": "Контактор", "qty": 3, "unit": "шт"},
-      {"article": "CHINT-002", "name": "Реле времени", "qty": 1, "unit": "шт"}
-    ]
+    {
+      "shield_name": "ВРУ",
+      "items": [
+        {"article": "CHINT-001", "name": "Контактор", "current_a": "125", "poles": "3P", "qty": 3},
+        {"article": "CHINT-002", "name": "Реле времени", "qty": 1}
+      ]
+    }
     """
 
     with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
@@ -53,9 +56,11 @@ def test_vision_parser_success():
             result = asyncio.run(parse_equipment_from_pdf(pdf_path))
 
             assert len(result) == 2
-            assert result[0]["article"] == "CHINT-001"
+            # First item has current_a and poles, so it should be normalized to "Авт. выкл. 3P 125А"
+            assert result[0]["name"] == "Авт. выкл. 3P 125А"
             assert result[0]["qty"] == 3
-            assert result[1]["article"] == "CHINT-002"
+            # Second item lacks current_a and poles, so it should fallback to its original name "Реле времени"
+            assert result[1]["name"] == "Реле времени"
             assert result[1]["qty"] == 1
 
             # Test Cache Hit
@@ -69,11 +74,13 @@ def test_vision_parser_success():
                 os.remove(pdf_path)
 
 def test_vision_parser_fallback_404():
-    """Test that vision parser successfully falls back to Gemma 4 when Qwen returns 404."""
+    """Test that vision parser successfully falls back to Gemma 4 when primary model returns 404/429."""
     mock_json_response = """
-    [
-      {"article": "FALLBACK-001", "name": "Шкаф", "qty": 1, "unit": "шт"}
-    ]
+    {
+      "items": [
+        {"article": "FALLBACK-001", "name": "Шкаф", "qty": 1, "unit": "шт"}
+      ]
+    }
     """
 
     with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
@@ -87,7 +94,7 @@ def test_vision_parser_fallback_404():
         # Side effect to raise Exception on primary model and return success on fallback model
         def completions_side_effect(*args, **kwargs):
             model = kwargs.get("model")
-            if model == "qwen/qwen-vl-plus:free":
+            if model == "google/gemma-4-26b-a4b-it:free":
                 ex = Exception("404 Not Found")
                 ex.status_code = 404
                 raise ex
