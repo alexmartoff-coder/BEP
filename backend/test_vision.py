@@ -68,6 +68,60 @@ def test_vision_parser_success():
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
 
+def test_vision_parser_fallback_404():
+    """Test that vision parser successfully falls back to Gemma 4 when Qwen returns 404."""
+    mock_json_response = """
+    [
+      {"article": "FALLBACK-001", "name": "Шкаф", "qty": 1, "unit": "шт"}
+    ]
+    """
+
+    with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
+         patch("backend.vision_parser.convert_from_path") as mock_convert, \
+         patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake_key"}):
+
+        mock_convert.return_value = [MagicMock()]
+
+        mock_client = MagicMock()
+
+        # Side effect to raise Exception on primary model and return success on fallback model
+        def completions_side_effect(*args, **kwargs):
+            model = kwargs.get("model")
+            if model == "qwen/qwen-vl-plus:free":
+                ex = Exception("404 Not Found")
+                ex.status_code = 404
+                raise ex
+            elif model == "google/gemma-4-31b-it:free":
+                return MockCompletionResponse(mock_json_response)
+            else:
+                raise Exception("Unexpected model called")
+
+        mock_client.chat.completions.create.side_effect = completions_side_effect
+        mock_openai_class.return_value = mock_client
+
+        pdf_path = "/tmp/mock_test_vision_fallback.pdf"
+        with open(pdf_path, "wb") as f:
+            f.write(b"mock fallback pdf content")
+
+        try:
+            # Clear cache
+            from backend.vision_parser import _memory_cache
+            file_hash = compute_pdf_md5(pdf_path)
+            _memory_cache.pop(file_hash, None)
+
+            result = asyncio.run(parse_equipment_from_pdf(pdf_path))
+
+            assert len(result) == 1
+            assert result[0]["article"] == "FALLBACK-001"
+            assert result[0]["qty"] == 1
+
+            # Verify that create was indeed called twice
+            assert mock_client.chat.completions.create.call_count == 2
+
+        finally:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+
 def test_vision_parser_no_api_key():
     """Test that vision parser returns empty list if OPENROUTER_API_KEY is not set."""
     # Ensure OPENROUTER_API_KEY is not present in mocked env

@@ -68,8 +68,9 @@ def clean_json_response(text: str) -> str:
 
 async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """
-    Extracts equipment from PDF using OpenRouter API with Qwen 2.5 VL model.
-    Converts PDF pages into PIL images, sends them as base64 data URLs to Qwen 2.5 VL,
+    Extracts equipment from PDF using OpenRouter API with Qwen VL Plus model (primary)
+    and Gemma 4 (fallback if 404).
+    Converts PDF pages into PIL images, sends them as base64 data URLs,
     and returns a parsed list of equipment dictionaries.
     """
     # 1. Check cache first
@@ -144,20 +145,43 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                 }
             })
 
-        logger.info(f"[Vision] Sending request to OpenRouter + qwen2.5-vl with {len(images_to_send)} images...")
+        # Try primary model first
+        try:
+            logger.info(f"[Vision] Sending request to OpenRouter + qwen-vl-plus with {len(images_to_send)} images...")
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model="qwen/qwen-vl-plus:free",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": content_payload
+                    }
+                ],
+                temperature=0.1
+            )
+        except Exception as e:
+            # Check for 404 Not Found error to invoke fallback
+            is_404 = False
+            if hasattr(e, "status_code") and e.status_code == 404:
+                is_404 = True
+            elif "404" in str(e) or "NOT_FOUND" in str(e).upper():
+                is_404 = True
 
-        # Call chat completions API
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model="qwen/qwen2.5-vl-72b-instruct:free",
-            messages=[
-                {
-                    "role": "user",
-                    "content": content_payload
-                }
-            ],
-            temperature=0.1
-        )
+            if is_404:
+                logger.warning(f"[Vision] Primary model qwen/qwen-vl-plus:free returned 404. Attempting fallback model google/gemma-4-31b-it:free...")
+                response = await asyncio.to_thread(
+                    client.chat.completions.create,
+                    model="google/gemma-4-31b-it:free",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": content_payload
+                        }
+                    ],
+                    temperature=0.1
+                )
+            else:
+                raise e
 
         if not response or not response.choices or not response.choices[0].message.content:
             logger.warning("[Vision] OpenRouter API returned an empty response.")
@@ -166,7 +190,7 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         # Parse output JSON
         raw_text = response.choices[0].message.content
         cleaned_text = clean_json_response(raw_text)
-        logger.debug(f"Raw response from OpenRouter + qwen2.5-vl: {cleaned_text}")
+        logger.debug(f"Raw response from OpenRouter: {cleaned_text}")
 
         parsed_data = json.loads(cleaned_text)
         if not isinstance(parsed_data, list):
@@ -198,7 +222,7 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                     "unit": unit
                 })
 
-        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter + qwen2.5-vl.")
+        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter.")
 
         # Store to cache
         if standardized_items:
@@ -208,6 +232,6 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         return standardized_items
 
     except Exception as e:
-        logger.error(f"[Vision] OpenRouter + qwen2.5-vl Vision API parsing failed: {e}", exc_info=True)
+        logger.error(f"[Vision] OpenRouter Vision API parsing failed: {e}", exc_info=True)
         # Log error and return empty list to not break the pipeline
         return []
