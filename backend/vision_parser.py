@@ -139,7 +139,7 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         # Call Generate Content in executor to avoid blocking thread
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model="model="gemini-2.5-flash",
+            model="gemini-2.5-flash",
             contents=contents,
             config=config
         )
