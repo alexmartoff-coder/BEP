@@ -4,7 +4,40 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import io
 import re
+import logging
 from backend.price_parser import clean_key
+
+logger = logging.getLogger("kp_generator")
+
+def strict_poles_current_match(poles: str, current_a: str, price_map: Dict[str, float]) -> float:
+    """
+    Strictly matches the price list based on poles and current_a values.
+    Returns the price if found, else 0.0.
+    """
+    if not poles or not current_a:
+        return 0.0
+
+    poles_norm = poles.lower().strip() # e.g. "3p"
+
+    # Extract only the numeric digits from current_a (e.g. "125" from "125А")
+    current_digits_match = re.search(r'\d+', current_a)
+    if not current_digits_match:
+        return 0.0
+    current_norm = current_digits_match.group(0) # e.g. "125"
+
+    # Iterate over price keys to find strict matches
+    for key, price in price_map.items():
+        key_lower = key.lower()
+        # 1. Verify poles match (e.g. "3p" is in the price key/desc)
+        if poles_norm not in key_lower:
+            continue
+        # 2. Verify current matches strictly as a whole integer (not matching "16" in "160")
+        pattern = r'(?<!\d)' + re.escape(current_norm) + r'(?!\d)'
+        if re.search(pattern, key_lower):
+            logger.info(f"[Pricing] Strict match found for poles={poles_norm}, current={current_norm} inside key: '{key}' (Price: {price})")
+            return price
+
+    return 0.0
 
 def word_overlap_match(name: str, price_map: Dict[str, float]) -> tuple[float, bool]:
     """
@@ -39,12 +72,11 @@ def word_overlap_match(name: str, price_map: Dict[str, float]) -> tuple[float, b
 
 def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, float]) -> Dict[str, Any]:
     """
-    Combines the parsed board positions with pricing from the CHINT price list.
+    Combines the parsed board positions with pricing from the price list.
     Calculates prices, line totals, board subtotals, and grand totals.
     Matches with strict fallback hierarchy:
-    1. Exact match by clean article code.
-    2. Substring match by clean article code.
-    3. Heuristic matching via keyword word overlap in product name.
+    - If poles + current_a are present (Vision items), uses strict strict_poles_current_match.
+    - Otherwise (fallback text-parsed items), uses the 4-tier match hierarchy.
     """
     grand_total = 0.0
     kp_boards = []
@@ -59,6 +91,8 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
             name = item.get("name", "")
             qty = item.get("qty", 1)
             unit = item.get("unit", "шт")
+            poles = item.get("poles", "")
+            current_a = item.get("current_a", "")
 
             # Skip empty entries
             if not article and not name:
@@ -67,50 +101,58 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
             price = 0.0
             price_found = False
 
-            # 1. Exact match by cleaned article
-            if article:
-                cleaned_art = clean_key(article)
-                # First check direct key
-                if cleaned_art in price_map:
-                    price = price_map[cleaned_art]
+            # 1. Match strictly by poles and current_a if both are available
+            if poles and current_a:
+                price = strict_poles_current_match(poles, current_a, price_map)
+                if price > 0.0:
                     price_found = True
-                else:
-                    # Compare cleaned versions of both keys
-                    for pk in price_map:
-                        if cleaned_art == clean_key(pk):
-                            price = price_map[pk]
-                            price_found = True
-                            break
 
-            # 2. Substring/Partial matching by clean article
-            if not price_found and article:
-                cleaned_art = clean_key(article)
-                for pk in price_map:
-                    cleaned_pk = clean_key(pk)
-                    if cleaned_pk and (cleaned_art in cleaned_pk or cleaned_pk in cleaned_art):
-                        price = price_map[pk]
+            # 2. Classic matching fallback chain if not matched via poles/current_a
+            if not price_found and not (poles and current_a):
+                # 2.1 Exact match by cleaned article
+                if article:
+                    cleaned_art = clean_key(article)
+                    # First check direct key
+                    if cleaned_art in price_map:
+                        price = price_map[cleaned_art]
                         price_found = True
-                        break
+                    else:
+                        # Compare cleaned versions of both keys
+                        for pk in price_map:
+                            if cleaned_art == clean_key(pk):
+                                price = price_map[pk]
+                                price_found = True
+                                break
 
-            # 3. Match by clean name (exact name match)
-            if not price_found and name:
-                cleaned_name = clean_key(name)
-                if cleaned_name in price_map:
-                    price = price_map[cleaned_name]
-                    price_found = True
-                else:
+                # 2.2 Substring/Partial matching by clean article
+                if not price_found and article:
+                    cleaned_art = clean_key(article)
                     for pk in price_map:
-                        if cleaned_name == clean_key(pk):
+                        cleaned_pk = clean_key(pk)
+                        if cleaned_pk and (cleaned_art in cleaned_pk or cleaned_pk in cleaned_art):
                             price = price_map[pk]
                             price_found = True
                             break
 
-            # 4. Fallback matching via word overlap search in description/name
-            if not price_found and name:
-                p, matched = word_overlap_match(name, price_map)
-                if matched:
-                    price = p
-                    price_found = True
+                # 2.3 Match by clean name (exact name match)
+                if not price_found and name:
+                    cleaned_name = clean_key(name)
+                    if cleaned_name in price_map:
+                        price = price_map[cleaned_name]
+                        price_found = True
+                    else:
+                        for pk in price_map:
+                            if cleaned_name == clean_key(pk):
+                                price = price_map[pk]
+                                price_found = True
+                                break
+
+                # 2.4 Fallback matching via word overlap search in description/name
+                if not price_found and name:
+                    p, matched = word_overlap_match(name, price_map)
+                    if matched:
+                        price = p
+                        price_found = True
 
             # Compute total cost
             total_sum = price * qty

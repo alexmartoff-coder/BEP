@@ -156,17 +156,14 @@ def test_combined_pdf_parser_merging():
          # Call the combined parser
          boards = asyncio.run(parse_pdf_combined_to_bom(b"pdf contents"))
 
-         # We expect boards to have ВРУ board
+         # We expect boards to contain only Vision items and completely ignore text parser
          assert len(boards) == 1
          board = boards[0]
-         assert board["board_name"] == "ВРУ"
-
-         # The items should contain NM8N-1600S with SUMMED quantity (1 from text + 2 from Vision = 3)
-         # And NEW-ART from Vision appended to the board
+         assert board["board_name"] == "Распознано Vision API"
          assert len(board["items"]) == 2
 
          item_nm = next(i for i in board["items"] if i["article"] == "NM8N-1600S")
-         assert item_nm["qty"] == 3
+         assert item_nm["qty"] == 2
 
          item_new = next(i for i in board["items"] if i["article"] == "NEW-ART")
          assert item_new["qty"] == 5
