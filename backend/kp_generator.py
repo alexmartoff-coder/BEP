@@ -70,13 +70,12 @@ def word_overlap_match(name: str, price_map: Dict[str, float]) -> tuple[float, b
 
     return 0.0, False
 
-def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, float]) -> Dict[str, Any]:
+def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, float], index_map: Dict[str, Any] = None) -> Dict[str, Any]:
     """
-    Combines the parsed board positions with pricing from the price list.
-    Calculates prices, line totals, board subtotals, and grand totals.
-    Matches with strict fallback hierarchy:
-    - If poles + current_a are present (Vision items), uses strict strict_poles_current_match.
-    - Otherwise (fallback text-parsed items), uses the 4-tier match hierarchy.
+    Combines parsed board positions with pricing.
+    - For items having both poles and current_a (Vision items), strictly checks the structured index_map
+      under key poles_current (e.g., "3P_125"). If found, enriches with correct order article and price.
+    - If not found or if fallback text-parsed items, uses normal exact, substring, or name matches.
     """
     grand_total = 0.0
     kp_boards = []
@@ -101,15 +100,30 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
             price = 0.0
             price_found = False
 
-            # 1. Match strictly by poles and current_a if both are available
-            if poles and current_a:
+            # 1. Strict index lookup for Vision items
+            if poles and current_a and index_map:
+                poles_norm = poles.upper().strip() # e.g. "3P"
+                current_digits_match = re.search(r'\d+', current_a)
+                current_val = current_digits_match.group(0) if current_digits_match else ""
+
+                key = f"{poles_norm}_{current_val}"
+                if key in index_map and index_map[key]:
+                    # Take the first matched position inside our price list index
+                    matched_pos = index_map[key][0]
+                    price = matched_pos.get("price", 0.0)
+                    article = matched_pos.get("article", "")
+                    price_found = True
+                    logger.info(f"[Pricing Index] Matched '{key}' strictly -> article: '{article}', price: {price}")
+
+            # 2. Strict poles/current fallback matching (if index_map is empty/not passed but poles/current are available)
+            if not price_found and poles and current_a:
                 price = strict_poles_current_match(poles, current_a, price_map)
                 if price > 0.0:
                     price_found = True
 
-            # 2. Classic matching fallback chain if not matched via poles/current_a
+            # 3. Classic matching fallback chain if not matched via poles/current
             if not price_found and not (poles and current_a):
-                # 2.1 Exact match by cleaned article
+                # 3.1 Exact match by cleaned article
                 if article:
                     cleaned_art = clean_key(article)
                     # First check direct key
@@ -124,7 +138,7 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                                 price_found = True
                                 break
 
-                # 2.2 Substring/Partial matching by clean article
+                # 3.2 Substring/Partial matching by clean article
                 if not price_found and article:
                     cleaned_art = clean_key(article)
                     for pk in price_map:
@@ -134,7 +148,7 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                             price_found = True
                             break
 
-                # 2.3 Match by clean name (exact name match)
+                # 3.3 Match by clean name (exact name match)
                 if not price_found and name:
                     cleaned_name = clean_key(name)
                     if cleaned_name in price_map:
@@ -147,7 +161,7 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                                 price_found = True
                                 break
 
-                # 2.4 Fallback matching via word overlap search in description/name
+                # 3.4 Fallback matching via word overlap search in description/name
                 if not price_found and name:
                     p, matched = word_overlap_match(name, price_map)
                     if matched:

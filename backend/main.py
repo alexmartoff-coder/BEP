@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 
 from backend.pdf_parser import extract_text_from_pdf, parse_pdf_combined_to_bom
 from backend.bom_parser import analyze_equipment
-from backend.price_parser import parse_price_list
+from backend.price_parser import parse_price_list, build_and_save_index
 from backend.kp_generator import generate_preliminary_kp, export_kp_to_excel
 
 app = FastAPI(
@@ -114,8 +114,8 @@ async def generate_kp(
     """
     Real business-workflow endpoint:
     Accepts PDF technical document specification AND one or more optional Excel price list sheets.
-    If pricelists are provided, saves them persistently on disk and uses them.
-    If pricelists are not provided, uses the currently active/saved pricelist on disk.
+    If pricelists are provided, saves them persistently on disk and builds/saves the indexing knowledge base.
+    If pricelists are not provided, uses the currently active/saved pricelist and its index on disk.
     Parses PDF, extracts BOM, compiles lookup prices map from pricelists, matches,
     and returns a structured Commercial Proposal JSON.
     """
@@ -131,17 +131,27 @@ async def generate_kp(
         # Create directory for price list storage
         os.makedirs("data/pricelists", exist_ok=True)
 
-        # 1. Parse PDF specification text and Gemini Vision combined
+        # 1. Parse PDF specification text and OpenRouter Vision combined
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes)
         boards = await parse_pdf_combined_to_bom(pdf_bytes)
 
-        # 2. Parse and merge uploaded price lists
+        # 2. Parse, merge and index uploaded price lists
         price_map = {}
+        index_map = {}
         if pricelists:
-            # Overwrite active price lists on disk with the newly uploaded files
+            # Overwrite active price lists and structured indices on disk with newly uploaded files
             for p_idx, p_list in enumerate(pricelists):
                 price_bytes = await p_list.read()
+
+                # Build index map for the price list
+                file_index = build_and_save_index(price_bytes)
+                # Merge indices
+                for k, v in file_index.items():
+                    if k not in index_map:
+                        index_map[k] = []
+                    index_map[k].extend(v)
+
                 price_map = parse_price_list(price_bytes, price_map)
 
                 # Save the first price list on disk as our primary/active pricelist
@@ -153,18 +163,28 @@ async def generate_kp(
                     metadata = {"filename": p_list.filename}
                     with open("data/pricelists/metadata.json", "w", encoding="utf-8") as mf:
                         json.dump(metadata, mf, ensure_ascii=False, indent=2)
+
+            # Save the compiled active index on disk
+            index_path = "data/pricelists/active_index.json"
+            with open(index_path, "w", encoding="utf-8") as index_file:
+                json.dump(index_map, index_file, ensure_ascii=False, indent=2)
         else:
             # No pricelists uploaded, load from persistent storage
             active_path = "data/pricelists/active_pricelist.xlsx"
-            if os.path.exists(active_path):
+            index_path = "data/pricelists/active_index.json"
+            if os.path.exists(active_path) and os.path.exists(index_path):
                 with open(active_path, "rb") as f:
                     price_bytes = f.read()
                 price_map = parse_price_list(price_bytes, price_map)
+
+                # Load existing persistent index map
+                with open(index_path, "r", encoding="utf-8") as index_file:
+                    index_map = json.load(index_file)
             else:
                 raise HTTPException(status_code=400, detail="Прайс-лист не найден. Пожалуйста, загрузите хотя бы один прайс-лист (.xlsx).")
 
         # 3. Generate the preliminary commercial proposal
-        kp_data = generate_preliminary_kp(boards, price_map)
+        kp_data = generate_preliminary_kp(boards, price_map, index_map)
 
         return JSONResponse(content={
             "status": "success",
