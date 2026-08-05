@@ -73,6 +73,51 @@ def test_vision_parser_success():
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
 
+def test_vision_parser_duplicate_grouping():
+    """Test that Vision parser successfully groups duplicates with the same poles and current_a."""
+    mock_json_response = """
+    {
+      "shield_name": "ШР",
+      "items": [
+        {"name": "Авт. выкл. 3P 16A", "current_a": "16", "poles": "3P", "qty": 2},
+        {"name": "Авт. выкл. 3P 16А", "current_a": "16A", "poles": "3P", "qty": 5}
+      ]
+    }
+    """
+
+    with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
+         patch("backend.vision_parser.convert_from_path") as mock_convert, \
+         patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake_key"}):
+
+        mock_convert.return_value = [MagicMock()]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = MockCompletionResponse(mock_json_response)
+        mock_openai_class.return_value = mock_client
+
+        pdf_path = "/tmp/mock_test_vision_grouping.pdf"
+        with open(pdf_path, "wb") as f:
+            f.write(b"mock pdf content")
+
+        try:
+            # Clear cache
+            from backend.vision_parser import _memory_cache
+            file_hash = compute_pdf_md5(pdf_path)
+            _memory_cache.pop(file_hash, None)
+
+            result = asyncio.run(parse_equipment_from_pdf(pdf_path))
+
+            # Since both are 3P 16A, they should be grouped into a single item with qty = 2 + 5 = 7
+            assert len(result) == 1
+            assert result[0]["name"] == "Авт. выкл. 3P 16А"
+            assert result[0]["qty"] == 7
+            assert result[0]["poles"] == "3P"
+            assert result[0]["current_a"] == "16"
+
+        finally:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+
 def test_vision_parser_fallback_404():
     """Test that vision parser successfully falls back to Gemma 4 when primary model returns 404/429."""
     mock_json_response = """

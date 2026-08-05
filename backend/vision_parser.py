@@ -5,6 +5,7 @@ import logging
 import asyncio
 import base64
 import io
+import re
 from typing import List, Dict, Any
 from pdf2image import convert_from_path
 from openai import OpenAI
@@ -105,26 +106,22 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         if len(images) > 10:
             logger.info(f"[Vision] PDF has {len(images)} pages. Limiting Vision API processing to first 10 pages.")
 
-        # Prepare system instructions / prompt as requested
+        # Prepare strict prompt as requested by the user
         prompt = """
-Ты — инженер по щитовому оборудованию. Тебе дана однолинейная схема электрического щита.
+Ты инженер по щитовому оборудованию. На изображении — однолинейная схема щита.
 
-Извлеки ТОЛЬКО автоматические выключатели и корпус щита (если указан).
+Извлеки ТОЛЬКО автоматические выключатели.
 
-Для каждого автомата укажи:
-- ток (А)
-- полюса (1P или 3P)
-- количество одинаковых
+Смотри подписи под/рядом с автоматами: ток (100А, 125А, 400А, 630А…) и полюса (1P, 3P).
 
-ИГНОРИРУЙ:
-- подписи QF, QF1, QF2, QF3...
-- адреса, штампы, примечания, кабели, уставки
+ОБЯЗАТЕЛЬНО:
+- Группируй одинаковые (одинаковый ток + полюса) в ОДНУ позицию с qty
+- Не пиши отдельные строки на каждый QF1, QF2…
+- Игнорируй: QF, QF1, QF2, адреса, штампы, кабели, примечания, уставки, нагрузки (Сортер, Резерв)
 
-Группируй одинаковые аппараты в одну позицию с qty.
-
-Ответ строго JSON:
+Формат ответа — только JSON:
 {
-  "shield_name": "название щита если есть",
+  "shield_name": "название щита",
   "items": [
     {"article": "артикул или код если указан", "name": "Авт. выкл. 3P 125А", "current_a": 125, "poles": "3P", "qty": 6}
   ]
@@ -203,22 +200,18 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         elif isinstance(parsed_json, list):
             items_list = parsed_json
 
-        # Standardize results and normalize naming as requested
-        standardized_items = []
+        # Group identical items on the backend by poles + current_a values
+        grouped_dict = {}
         for item in items_list:
             if not isinstance(item, dict):
                 continue
 
-            poles = str(item.get("poles", "")).strip()
+            poles = str(item.get("poles", "")).strip().upper()
             current_a = str(item.get("current_a", "")).strip()
 
-            # Normalize naming: "Авт. выкл. {poles} {current_a}А"
-            if poles and current_a:
-                # Ensure current_a does not already end with Russian 'А' or English 'A' before appending
-                clean_current = current_a.rstrip("ААaA ")
-                normalized_name = f"Авт. выкл. {poles} {clean_current}А"
-            else:
-                normalized_name = str(item.get("name", "Авт. выкл.")).strip()
+            # Extract digits from current_a
+            current_digits_match = re.search(r'\d+', current_a)
+            current_val = current_digits_match.group(0) if current_digits_match else ""
 
             qty = item.get("qty", 1)
             try:
@@ -229,17 +222,47 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
             article = str(item.get("article", "")).strip()
             unit = str(item.get("unit", "шт")).strip()
 
-            if normalized_name:
-                standardized_items.append({
-                    "article": article,
-                    "name": normalized_name,
-                    "qty": qty,
-                    "unit": unit,
-                    "poles": poles,
-                    "current_a": current_a
-                })
+            # Check if poles and current_val are present for grouping key
+            if poles and current_val:
+                group_key = (poles, current_val)
+                if group_key in grouped_dict:
+                    grouped_dict[group_key]["qty"] += qty
+                    # Preserve article if missing
+                    if article and not grouped_dict[group_key]["article"]:
+                        grouped_dict[group_key]["article"] = article
+                else:
+                    # Form normalized name: "Авт. выкл. {poles} {current_val}А"
+                    name_norm = f"Авт. выкл. {poles} {current_val}А"
+                    grouped_dict[group_key] = {
+                        "article": article,
+                        "name": name_norm,
+                        "qty": qty,
+                        "unit": unit,
+                        "poles": poles,
+                        "current_a": current_val
+                    }
+            else:
+                # fallback grouping by raw name
+                name_raw = str(item.get("name", "Авт. выкл.")).strip()
+                if not name_raw:
+                    name_raw = "Авт. выкл."
+                group_key = ("RAW", name_raw)
+                if group_key in grouped_dict:
+                    grouped_dict[group_key]["qty"] += qty
+                    if article and not grouped_dict[group_key]["article"]:
+                        grouped_dict[group_key]["article"] = article
+                else:
+                    grouped_dict[group_key] = {
+                        "article": article,
+                        "name": name_raw,
+                        "qty": qty,
+                        "unit": unit,
+                        "poles": poles,
+                        "current_a": current_a
+                    }
 
-        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter.")
+        standardized_items = list(grouped_dict.values())
+        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter (grouped backend-side).")
 
         # Store to cache
         if standardized_items:
