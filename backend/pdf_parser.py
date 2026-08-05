@@ -2,6 +2,7 @@ import io
 import logging
 import os
 import tempfile
+import re
 from typing import List, Dict, Any
 from PIL import Image
 import pdfplumber
@@ -52,7 +53,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
             logger.error(f"OCR fallback failed: {e}")
             # If OCR completely fails or tools aren't installed/configured,
             # we keep whatever pdfplumber extracted or return a descriptive fallback string.
-            if not extracted_text:
+            if not_extracted_text := not extracted_text:
                 extracted_text = "Не удалось извлечь текст из PDF. Возможно, файл содержит только отсканированные изображения и OCR библиотека/зависимости не настроены."
 
     return extracted_text
@@ -60,8 +61,9 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 async def parse_pdf_combined_to_bom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
     """
     Parses PDF into structured board groups.
-    Combines Gemini Vision API parsing with existing text-based BOM parsing.
-    Sums quantities for matched articles/names and appends unique items.
+    If Vision successfully returns items, COMPLETELY ignores the text-based parser
+    and returns only those items in a single board.
+    Otherwise, falls back to text-based parsing with strict junk filtering.
     """
     # 1. First attempt to extract equipment with Vision API
     vision_items = []
@@ -81,59 +83,58 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
             except Exception as e:
                 logger.warning(f"Failed to delete temp file {tmp_path}: {e}")
 
-    # 2. Extract text and parse BOM from text
-    extracted_text = extract_text_from_pdf(pdf_bytes)
-    text_boards = parse_bom_from_text(extracted_text)
-
-    # 3. Fallback check: if Vision returned nothing or very little data, return text_boards
-    if not vision_items or len(vision_items) < 2:
-        logger.info("Vision API returned empty or insufficient data (<2 items). Falling back to text-based parsing.")
-        return text_boards
-
-    if not text_boards:
-        logger.info("Text-based parsing returned no boards. Using Vision API results directly.")
+    # 2. Check if Vision successfully returned elements
+    if vision_items:
+        logger.info(f"[Vision] Vision API successfully returned {len(vision_items)} items. COMPLETELY ignoring text-based parser.")
         return [{
             "board_name": "Распознано Vision API",
             "items": vision_items
         }]
 
-    # 4. Merging logic: sum quantities for matching items, append unique ones
-    # We will modify text_boards in place to keep the original grouping structure
-    matched_vision_indices = set()
+    # 3. Fallback to text-based parsing with strict filtering
+    logger.info("Vision API returned no items. Falling back to text-based parsing with strict filters.")
+    extracted_text = extract_text_from_pdf(pdf_bytes)
 
-    # Normalize helper
-    def normalize_key(s: str) -> str:
-        if not s:
-            return ""
-        return "".join(c.lower() for c in s if c.isalnum())
+    # Filter lines before passing to text parser
+    filtered_lines = []
+    for line in extracted_text.split("\n"):
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        # Discard lines shorter than 5 characters
+        if len(line_stripped) < 5:
+            continue
+        # Discard pure QF+digits lines (e.g. QF1, QF2)
+        if re.match(r'(?i)^QF\d+$', line_stripped):
+            continue
+        # Discard lines with addresses, cadastral info, floor levels
+        lower_line = line_stripped.lower()
+        if any(kw in lower_line for kw in ["адрес", "по адресу", "кадастр", "уровня пола", "мм от"]):
+            continue
+        filtered_lines.append(line_stripped)
 
+    filtered_text = "\n".join(filtered_lines)
+    text_boards = parse_bom_from_text(filtered_text)
+
+    # Filter board items to keep them pristine
+    cleaned_text_boards = []
     for board in text_boards:
-        for text_item in board.get("items", []):
-            text_art = normalize_key(text_item.get("article", ""))
-            text_name = normalize_key(text_item.get("name", ""))
+        cleaned_items = []
+        for item in board.get("items", []):
+            item_name = item.get("name", "")
+            item_name_lower = item_name.lower()
+            if len(item_name) < 5:
+                continue
+            if re.match(r'(?i)^QF\d+$', item_name):
+                continue
+            if any(kw in item_name_lower for kw in ["адрес", "по адресу", "кадастр", "уровня пола", "мм от"]):
+                continue
+            cleaned_items.append(item)
 
-            for v_idx, v_item in enumerate(vision_items):
-                if v_idx in matched_vision_indices:
-                    continue
+        if cleaned_items:
+            cleaned_text_boards.append({
+                "board_name": board["board_name"],
+                "items": cleaned_items
+            })
 
-                v_art = normalize_key(v_item.get("article", ""))
-                v_name = normalize_key(v_item.get("name", ""))
-
-                # Match by article
-                if text_art and v_art and text_art == v_art:
-                    text_item["qty"] += v_item["qty"]
-                    matched_vision_indices.add(v_idx)
-                    logger.info(f"Merged quantities by article: {text_item['article']} (+{v_item['qty']})")
-                # Fallback match by name
-                elif text_name and v_name and text_name == v_name:
-                    text_item["qty"] += v_item["qty"]
-                    matched_vision_indices.add(v_idx)
-                    logger.info(f"Merged quantities by name: {text_item['name']} (+{v_item['qty']})")
-
-    # For unmatched Vision items, append them to the first board
-    unmatched_items = [v_item for v_idx, v_item in enumerate(vision_items) if v_idx not in matched_vision_indices]
-    if unmatched_items:
-        logger.info(f"Adding {len(unmatched_items)} unmatched Vision items to board '{text_boards[0]['board_name']}'")
-        text_boards[0]["items"].extend(unmatched_items)
-
-    return text_boards
+    return cleaned_text_boards

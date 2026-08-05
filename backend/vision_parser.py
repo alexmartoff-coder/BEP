@@ -234,7 +234,9 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                     "article": article,
                     "name": normalized_name,
                     "qty": qty,
-                    "unit": unit
+                    "unit": unit,
+                    "poles": poles,
+                    "current_a": current_a
                 })
 
         logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter.")
