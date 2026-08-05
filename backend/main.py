@@ -4,7 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, StreamingResponse
 import os
 import io
-from typing import Dict, Any, List
+import json
+from typing import Dict, Any, List, Optional
 
 from backend.pdf_parser import extract_text_from_pdf, parse_pdf_combined_to_bom
 from backend.bom_parser import analyze_equipment
@@ -50,6 +51,20 @@ async def health_check():
     """Health check endpoint for Railway deployment and monitoring."""
     return {"status": "ok", "service": "BEP"}
 
+@app.get("/api/active-pricelist")
+async def get_active_pricelist():
+    """Returns the original filename of the currently active/saved pricelist on disk."""
+    metadata_path = "data/pricelists/metadata.json"
+    active_path = "data/pricelists/active_pricelist.xlsx"
+    if os.path.exists(active_path) and os.path.exists(metadata_path):
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            return {"status": "success", "filename": metadata.get("filename", "active_pricelist.xlsx")}
+        except Exception as e:
+            return {"status": "success", "filename": "active_pricelist.xlsx"}
+    return {"status": "empty", "filename": None}
+
 @app.post("/api/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     """
@@ -94,46 +109,74 @@ async def upload_pdf(file: UploadFile = File(...)):
 @app.post("/api/generate-kp")
 async def generate_kp(
     specification: UploadFile = File(...),
-    pricelists: List[UploadFile] = File(...)
+    pricelists: List[UploadFile] = File(None)
 ):
     """
     Real business-workflow endpoint:
-    Accepts PDF technical document specification AND one or more Excel price list sheets.
-    Parses PDF, extracts BOM (via Vision API and classic parser), compiles lookup prices map from pricelists,
-    matches, and returns a structured Commercial Proposal JSON.
+    Accepts PDF technical document specification AND one or more optional Excel price list sheets.
+    If pricelists are provided, saves them persistently on disk and uses them.
+    If pricelists are not provided, uses the currently active/saved pricelist on disk.
+    Parses PDF, extracts BOM, compiles lookup prices map from pricelists, matches,
+    and returns a structured Commercial Proposal JSON.
     """
     if not specification.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Specification file must be a PDF document.")
 
-    for p_list in pricelists:
-        if not p_list.filename.lower().endswith(('.xlsx', '.xls')):
-            raise HTTPException(status_code=400, detail="Price lists must be Excel spreadsheets (.xlsx, .xls).")
+    if pricelists:
+        for p_list in pricelists:
+            if not p_list.filename.lower().endswith(('.xlsx', '.xls')):
+                raise HTTPException(status_code=400, detail="Price lists must be Excel spreadsheets (.xlsx, .xls).")
 
     try:
-        # 1. Parse PDF specification text
+        # Create directory for price list storage
+        os.makedirs("data/pricelists", exist_ok=True)
+
+        # 1. Parse PDF specification text and Gemini Vision combined
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes)
-
-        # 2. Extract structured equipment groups from text and Vision API combined
         boards = await parse_pdf_combined_to_bom(pdf_bytes)
 
-        # 3. Parse and merge all uploaded price lists
+        # 2. Parse and merge uploaded price lists
         price_map = {}
-        for p_list in pricelists:
-            price_bytes = await p_list.read()
-            price_map = parse_price_list(price_bytes, price_map)
+        if pricelists:
+            # Overwrite active price lists on disk with the newly uploaded files
+            for p_idx, p_list in enumerate(pricelists):
+                price_bytes = await p_list.read()
+                price_map = parse_price_list(price_bytes, price_map)
 
-        # 4. Generate the preliminary commercial proposal
+                # Save the first price list on disk as our primary/active pricelist
+                if p_idx == 0:
+                    active_path = "data/pricelists/active_pricelist.xlsx"
+                    with open(active_path, "wb") as f:
+                        f.write(price_bytes)
+                    # Save metadata
+                    metadata = {"filename": p_list.filename}
+                    with open("data/pricelists/metadata.json", "w", encoding="utf-8") as mf:
+                        json.dump(metadata, mf, ensure_ascii=False, indent=2)
+        else:
+            # No pricelists uploaded, load from persistent storage
+            active_path = "data/pricelists/active_pricelist.xlsx"
+            if os.path.exists(active_path):
+                with open(active_path, "rb") as f:
+                    price_bytes = f.read()
+                price_map = parse_price_list(price_bytes, price_map)
+            else:
+                raise HTTPException(status_code=400, detail="Прайс-лист не найден. Пожалуйста, загрузите хотя бы один прайс-лист (.xlsx).")
+
+        # 3. Generate the preliminary commercial proposal
         kp_data = generate_preliminary_kp(boards, price_map)
 
         return JSONResponse(content={
             "status": "success",
             "specification_file": specification.filename,
-            "pricelist_count": len(pricelists),
+            "pricelist_count": len(pricelists) if pricelists else 1,
             "extracted_text": extracted_text,
             "kp": kp_data
         })
     except Exception as e:
+        logger_name = "main"
+        import logging
+        logging.getLogger(logger_name).error(f"Failed to generate KP: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate KP: {str(e)}")
 
 @app.post("/api/export-kp")

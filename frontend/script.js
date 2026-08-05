@@ -22,7 +22,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let pdfFile = null;
     let priceFiles = []; // Supports multiple files selection
+    let activePricelistName = null; // Store computed active pricelist name on backend
     let activeKpData = null; // Store computed commercial proposal payload
+
+    // Query active pricelist on DOM load
+    fetch('/api/active-pricelist')
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'success' && data.filename) {
+                activePricelistName = data.filename;
+                priceFileStatus.innerHTML = `<strong>Используется прайс:</strong> ${escapeHtml(activePricelistName)}<br><span style="font-size: 0.85em; color: var(--text-muted);">(Загрузите новый файл для замены)</span>`;
+                priceDropZone.classList.add('active-file');
+                updateActionState();
+            }
+        })
+        .catch(err => console.error('Error fetching active pricelist:', err));
 
     // PDF selection events
     pdfSelectBtn.addEventListener('click', (e) => { e.stopPropagation(); pdfFileInput.click(); });
@@ -75,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Update Action Button state
     function updateActionState() {
-        if (pdfFile && priceFiles.length > 0) {
+        if (pdfFile && (priceFiles.length > 0 || activePricelistName)) {
             generateKpBtn.disabled = false;
         } else {
             generateKpBtn.disabled = true;
@@ -107,7 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Call API generate KP
     generateKpBtn.addEventListener('click', () => {
-        if (!pdfFile || priceFiles.length === 0) return;
+        if (!pdfFile || (priceFiles.length === 0 && !activePricelistName)) return;
 
         generalLoaderCard.classList.remove('hidden');
         kpResultsContainer.classList.add('hidden');
@@ -115,10 +129,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData();
         formData.append('specification', pdfFile);
 
-        // Append all selected price lists under the same 'pricelists' key
-        priceFiles.forEach(file => {
-            formData.append('pricelists', file);
-        });
+        // Append all selected price lists if uploaded
+        if (priceFiles.length > 0) {
+            priceFiles.forEach(file => {
+                formData.append('pricelists', file);
+            });
+        }
 
         fetch('/api/generate-kp', {
             method: 'POST',
@@ -137,8 +153,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 extractedTextViewer.textContent = data.extracted_text || 'Текст пуст или не был извлечён.';
 
                 // Update file info subtext
-                const prNames = priceFiles.map(f => f.name).join(', ');
+                const prNames = priceFiles.length > 0
+                    ? priceFiles.map(f => f.name).join(', ')
+                    : activePricelistName;
+
                 kpFilesInfo.innerHTML = `Сформировано на основе проекта <strong>"${escapeHtml(pdfFile.name)}"</strong> и прайс-листов: <strong>${escapeHtml(prNames)}</strong>`;
+
+                // If a new price list was uploaded, update activePricelistName state
+                if (priceFiles.length > 0) {
+                    activePricelistName = priceFiles[0].name;
+                }
 
                 renderKpTables(data.kp);
                 kpResultsContainer.classList.remove('hidden');
