@@ -103,3 +103,27 @@ def test_api_export_kp():
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     assert "attachment" in response.headers["content-disposition"]
+
+def test_build_and_save_index():
+    """Test building structured index from price list Excel sheet."""
+    from backend.price_parser import build_and_save_index
+    price_bytes = create_mock_price_excel()
+
+    index_map = build_and_save_index(price_bytes)
+    # The mock price sheet contains NM8N-1600S which matches poles and current
+    # NM8N-1600S -> "Автоматический выключатель NM8N-1600S", but let's see if it has poles/current.
+    # Our mock excel writes: ["NM8N-1600S", "Автоматический выключатель NM8N-1600S", "45000.50"]
+    # Let's create an excel byte stream specifically with poles/current to test extraction.
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Артикул", "Наименование", "Цена"])
+    ws.append(["CHINT-125", "Выключатель 3P 125A CHINT", "5000.00"])
+
+    out = io.BytesIO()
+    wb.save(out)
+    custom_bytes = out.getvalue()
+
+    custom_index = build_and_save_index(custom_bytes)
+    assert "3P_125" in custom_index
+    assert custom_index["3P_125"][0]["article"] == "CHINT-125"
+    assert custom_index["3P_125"][0]["price"] == 5000.0

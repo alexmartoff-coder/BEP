@@ -89,3 +89,95 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
             price_map[clean_key(name_val)] = price
 
     return price_map
+
+def build_and_save_index(file_bytes: bytes) -> Dict[str, Any]:
+    """
+    Parses the price list Excel, extracts poles and current_a, builds the structured index,
+    and returns a dictionary representing the index.
+    """
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    sheet = wb.active
+
+    # Identify key columns using header heuristics
+    col_article_idx = None
+    col_name_idx = None
+    col_price_idx = None
+
+    rows = list(sheet.iter_rows(values_only=True))
+
+    for r_idx, row in enumerate(rows[:35]):
+        row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
+        art_found = any("артикул" in val or "код" in val or "ref" in val or "article" in val for val in row_vals)
+        price_found = any("цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val for val in row_vals)
+
+        if art_found or price_found:
+            for c_idx, val in enumerate(row_vals):
+                if "артикул" in val or "код" in val or "ref" in val or "article" in val:
+                    col_article_idx = c_idx
+                elif "наименован" in val or "описание" in val or "модель" in val or "номенклатура" in val:
+                    col_name_idx = c_idx
+                elif "цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val:
+                    if col_price_idx is None or "ндс" in val:
+                        col_price_idx = c_idx
+            break
+
+    if col_article_idx is None:
+        col_article_idx = 0
+    if col_price_idx is None:
+        col_price_idx = 2
+    if col_name_idx is None:
+        col_name_idx = 1
+
+    index_map = {}
+
+    for row in rows:
+        if not any(row):
+            continue
+
+        art_val = row[col_article_idx] if col_article_idx < len(row) else None
+        name_val = row[col_name_idx] if col_name_idx < len(row) else None
+        price_val = row[col_price_idx] if col_price_idx < len(row) else None
+
+        if not name_val:
+            continue
+
+        try:
+            if price_val is not None:
+                price_str = str(price_val).strip()
+                price_clean = "".join(c for c in price_str if c.isdigit() or c == "." or c == ",")
+                price_clean = price_clean.replace(",", ".")
+                price = float(price_clean)
+            else:
+                continue
+        except ValueError:
+            continue
+
+        name_str = str(name_val).strip()
+        article_str = str(art_val).strip() if art_val is not None else ""
+
+        # 1. Extract poles (e.g. "3P")
+        poles = ""
+        # Match "1P", "2P", "3P", "4P", "1П", "2П", "3П", "4П", "1полюс", "3полюс"
+        poles_match = re.search(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', name_str, re.IGNORECASE)
+        if poles_match:
+            poles = f"{poles_match.group(1)}P"
+
+        # 2. Extract current_a (e.g. "125")
+        current_a = ""
+        # Match standalone ratings like "16А", "16A", "160A", etc.
+        current_match = re.search(r'\b(\d+)\s*(?:А|A|а|a)\b', name_str)
+        if current_match:
+            current_a = current_match.group(1)
+
+        # If successfully extracted both poles and current_a, add to index!
+        if poles and current_a:
+            key = f"{poles}_{current_a}"
+            if key not in index_map:
+                index_map[key] = []
+            index_map[key].append({
+                "article": article_str,
+                "name": name_str,
+                "price": price
+            })
+
+    return index_map
