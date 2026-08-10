@@ -7,6 +7,8 @@ import base64
 import io
 import re
 from typing import List, Dict, Any
+import tempfile
+from PIL import Image, ImageEnhance
 from pdf2image import convert_from_path
 from openai import OpenAI
 
@@ -50,10 +52,48 @@ def compute_pdf_md5(pdf_path: str) -> str:
         return f"{pdf_path}_{os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0}"
 
 def pil_image_to_base64(img) -> str:
-    """Converts a PIL Image to a base64 encoded PNG string."""
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
+    """
+    Applies upscaling (3x) with LANCZOS, enhances sharpness (2.0),
+    saves to a temp file, reads it, and encodes to base64 PNG string.
+    """
+    try:
+        # Get original dimensions
+        width, height = img.size
+        new_width = width * 3
+        new_height = height * 3
+
+        # Use Image.Resampling.LANCZOS or Image.LANCZOS based on Pillow version
+        try:
+            resample_filter = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample_filter = Image.LANCZOS
+
+        # Resize/Upscale 3x
+        resized_img = img.resize((new_width, new_height), resample_filter)
+
+        # Enhance sharpness (coefficient ~2.0)
+        enhancer = ImageEnhance.Sharpness(resized_img)
+        enhanced_img = enhancer.enhance(2.0)
+
+        # Save to a temporary file
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+            temp_path = tmp_file.name
+
+        try:
+            enhanced_img.save(temp_path, format="PNG")
+            with open(temp_path, "rb") as f:
+                img_bytes = f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+        return base64.b64encode(img_bytes).decode("utf-8")
+    except Exception as e:
+        logger.error(f"[Vision] Error processing PIL image: {e}")
+        # Fallback to simple bytes encoding in case of failure
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def clean_json_response(text: str) -> str:
     """Strips markdown code blocks and clean whitespaces to extract raw JSON."""
@@ -107,26 +147,8 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
             logger.info(f"[Vision] PDF has {len(images)} pages. Limiting Vision API processing to first 10 pages.")
 
         # Prepare strict prompt as requested by the user
-        prompt = """
-Ты инженер по щитовому оборудованию. На изображении — однолинейная схема щита.
+        prompt = "Ты — инженер-сметчик. Проанализируй эту электрическую схему. Найди ВСЕ автоматические выключатели и защитные устройства. Для каждого выведи 'mark' (его обозначение на схеме, например QF1, QF2), 'nominal' (силу тока, например 10A, 16A) и 'type' (тип, например 'MCB' или 'RCD'). ВАЖНО: Не пиши НИКАКОГО текста, кроме JSON. Ответ должен быть строго в формате JSON массива: [{\"mark\":\"QF1\", \"nominal\":\"16A\", \"type\":\"MCB\"}]. Если номинал не читается, ставь null."
 
-Извлеки ТОЛЬКО автоматические выключатели.
-
-Смотри подписи под/рядом с автоматами: ток (100А, 125А, 400А, 630А…) и полюса (1P, 3P).
-
-ОБЯЗАТЕЛЬНО:
-- Группируй одинаковые (одинаковый ток + полюса) в ОДНУ позицию с qty
-- Не пиши отдельные строки на каждый QF1, QF2…
-- Игнорируй: QF, QF1, QF2, адреса, штампы, кабели, примечания, уставки, нагрузки (Сортер, Резерв)
-
-Формат ответа — только JSON:
-{
-  "shield_name": "название щита",
-  "items": [
-    {"article": "артикул или код если указан", "name": "Авт. выкл. 3P 125А", "current_a": 125, "poles": "3P", "qty": 6}
-  ]
-}
-"""
         # Format payload in OpenAI Vision API format
         content_payload = [{"type": "text", "text": prompt}]
         for img in images_to_send:
@@ -153,7 +175,8 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                         "content": content_payload
                     }
                 ],
-                temperature=0.1
+                temperature=0.1,
+                response_format={"type": "json_object"}
             )
         except Exception as e:
             # Check for 404 Not Found or 429 Too Many Requests to invoke fallback
@@ -174,7 +197,8 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                             "content": content_payload
                         }
                     ],
-                    temperature=0.1
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
                 )
             else:
                 raise e
@@ -183,12 +207,26 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
             logger.warning("[Vision] OpenRouter API returned an empty response.")
             return []
 
-        # Parse output JSON
+        # Parse output JSON using re.search for [.*] as requested
         raw_text = response.choices[0].message.content
-        cleaned_text = clean_json_response(raw_text)
-        logger.debug(f"Raw response from OpenRouter: {cleaned_text}")
+        logger.debug(f"Raw response from OpenRouter: {raw_text}")
 
-        parsed_json = json.loads(cleaned_text)
+        parsed_json = []
+        try:
+            array_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+            if array_match:
+                cleaned_text = array_match.group(0)
+            else:
+                cleaned_text = clean_json_response(raw_text)
+            parsed_json = json.loads(cleaned_text)
+        except Exception as parse_err:
+            logger.warning(f"[Vision] Regex/JSON array parse failed: {parse_err}. Trying simple load.")
+            try:
+                cleaned_text = clean_json_response(raw_text)
+                parsed_json = json.loads(cleaned_text)
+            except Exception as e2:
+                logger.error(f"[Vision] All JSON parsing attempts failed: {e2}")
+                parsed_json = []
 
         # Resolve parsed_json into list of items
         items_list = []
@@ -200,69 +238,18 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         elif isinstance(parsed_json, list):
             items_list = parsed_json
 
-        # Group identical items on the backend by poles + current_a values
-        grouped_dict = {}
+        # Ensure all items match the new format with mark, nominal, type
+        standardized_items = []
         for item in items_list:
             if not isinstance(item, dict):
                 continue
+            standardized_items.append({
+                "mark": item.get("mark"),
+                "nominal": item.get("nominal"),
+                "type": item.get("type")
+            })
 
-            poles = str(item.get("poles", "")).strip().upper()
-            current_a = str(item.get("current_a", "")).strip()
-
-            # Extract digits from current_a
-            current_digits_match = re.search(r'\d+', current_a)
-            current_val = current_digits_match.group(0) if current_digits_match else ""
-
-            qty = item.get("qty", 1)
-            try:
-                qty = int(qty)
-            except (ValueError, TypeError):
-                qty = 1
-
-            article = str(item.get("article", "")).strip()
-            unit = str(item.get("unit", "шт")).strip()
-
-            # Check if poles and current_val are present for grouping key
-            if poles and current_val:
-                group_key = (poles, current_val)
-                if group_key in grouped_dict:
-                    grouped_dict[group_key]["qty"] += qty
-                    # Preserve article if missing
-                    if article and not grouped_dict[group_key]["article"]:
-                        grouped_dict[group_key]["article"] = article
-                else:
-                    # Form normalized name: "Авт. выкл. {poles} {current_val}А"
-                    name_norm = f"Авт. выкл. {poles} {current_val}А"
-                    grouped_dict[group_key] = {
-                        "article": article,
-                        "name": name_norm,
-                        "qty": qty,
-                        "unit": unit,
-                        "poles": poles,
-                        "current_a": current_val
-                    }
-            else:
-                # fallback grouping by raw name
-                name_raw = str(item.get("name", "Авт. выкл.")).strip()
-                if not name_raw:
-                    name_raw = "Авт. выкл."
-                group_key = ("RAW", name_raw)
-                if group_key in grouped_dict:
-                    grouped_dict[group_key]["qty"] += qty
-                    if article and not grouped_dict[group_key]["article"]:
-                        grouped_dict[group_key]["article"] = article
-                else:
-                    grouped_dict[group_key] = {
-                        "article": article,
-                        "name": name_raw,
-                        "qty": qty,
-                        "unit": unit,
-                        "poles": poles,
-                        "current_a": current_a
-                    }
-
-        standardized_items = list(grouped_dict.values())
-        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter (grouped backend-side).")
+        logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter.")
 
         # Store to cache
         if standardized_items:

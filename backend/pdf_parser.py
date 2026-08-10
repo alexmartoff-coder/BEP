@@ -86,9 +86,41 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
     # 2. Check if Vision successfully returned elements
     if vision_items:
         logger.info(f"[Vision] Vision API successfully returned {len(vision_items)} items. COMPLETELY ignoring text-based parser.")
+        # Normalize items for the KP generator
+        normalized_for_kp = []
+        for item in vision_items:
+            # Extract current digits from nominal (e.g., '16A' -> '16')
+            nominal_str = str(item.get("nominal") or "")
+            current_digits_match = re.search(r'\d+', nominal_str)
+            current_val = current_digits_match.group(0) if current_digits_match else ""
+
+            # Extract poles from type/mark/nominal, or default to 3P/1P
+            poles_val = "3P"  # standard fallback
+            if "1P" in nominal_str.upper() or "1P" in str(item.get("mark") or "").upper():
+                poles_val = "1P"
+            elif "2P" in nominal_str.upper():
+                poles_val = "2P"
+            elif "4P" in nominal_str.upper():
+                poles_val = "4P"
+
+            name_norm = f"Авт. выкл. {poles_val} {current_val}А" if current_val else str(item.get("mark") or "Автоматический выключатель")
+
+            normalized_for_kp.append({
+                "article": str(item.get("mark") or ""),
+                "name": name_norm,
+                "qty": 1,
+                "unit": "шт",
+                "poles": poles_val,
+                "current_a": current_val,
+                # Keep original fields for backward-compatibility or trace debugging
+                "mark": item.get("mark"),
+                "nominal": item.get("nominal"),
+                "type": item.get("type")
+            })
+
         return [{
             "board_name": "Распознано Vision API",
-            "items": vision_items
+            "items": normalized_for_kp
         }]
 
     # 3. Fallback to text-based parsing with strict filtering
