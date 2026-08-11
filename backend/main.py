@@ -81,7 +81,7 @@ def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float
 
     if not MATCHER:
         # Fallback to local default check if MATCHER is not initialized yet
-        price_list = [{"mark": "C16", "price": 180}]
+        price_list = [{"mark": "C16", "price": 180.0}]
         matched_items = []
         total_cost = 0.0
         for item in detected_items:
@@ -93,15 +93,20 @@ def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float
                 if p_mark in item_nominal or p_mark in item_mark:
                     matched_price = p_item["price"]
                     break
-            item_copy = dict(item)
+
+            matched_items.append({
+                'mark': item.get('mark'),
+                'series': item.get('series'),
+                'nominal': item.get('nominal'),
+                'poles': item.get('poles'),
+                'article': "ART-C16" if matched_price is not None else None,
+                'matched_name': "Авт. выкл. C16" if matched_price is not None else None,
+                'price': matched_price if matched_price is not None else 0.0,
+                'confidence': 1.0 if matched_price is not None else 0.0,
+                'warning': None if matched_price is not None else 'Не найдено в прайсе'
+            })
             if matched_price is not None:
-                item_copy["price"] = matched_price
                 total_cost += matched_price
-                item_copy["confidence"] = 1.0
-            else:
-                item_copy["price"] = None
-                item_copy["warning"] = "Не найдено в прайсе"
-            matched_items.append(item_copy)
         return matched_items, total_cost
 
     matched_items = []
@@ -115,26 +120,26 @@ def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float
             except (ValueError, TypeError):
                 price_val = 0.0
 
-            try:
-                price_no_vat = float(price_item.get('Тариф без НДС, руб') or 0.0)
-            except (ValueError, TypeError):
-                price_no_vat = 0.0
-
             matched_items.append({
-                **item,
+                'mark': item.get('mark'),
+                'series': item.get('series'),
+                'nominal': item.get('nominal'),
+                'poles': item.get('poles'),
                 'article': price_item.get('Артикул'),
-                'price': price_val,
-                'price_no_vat': price_no_vat,
                 'matched_name': price_item.get('Наименование'),
-                'confidence': round(confidence, 2)
+                'price': price_val,
+                'confidence': confidence
             })
             total_cost += price_val
         else:
             matched_items.append({
-                **item,
+                'mark': item.get('mark'),
+                'series': item.get('series'),
+                'nominal': item.get('nominal'),
+                'poles': item.get('poles'),
                 'article': None,
-                'price': None,
                 'matched_name': None,
+                'price': 0.0,
                 'warning': 'Не найдено в прайсе'
             })
 
@@ -336,6 +341,57 @@ async def generate_kp(
         import logging
         logging.getLogger(logger_name).error(f"Failed to generate KP: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate KP: {str(e)}")
+
+@app.post("/api/analyze")
+async def analyze_scheme(payload: dict = Body(...)):
+    """
+    Анализирует схему на основе распознанных данных и сопоставляет их с прайсом с помощью MATCHER.
+    """
+    try:
+        parsed_data = payload.get('items', [])
+
+        matched_items, total_cost = match_with_price_list(parsed_data)
+
+        return {
+            'success': True,
+            'items': matched_items,
+            'total_cost': total_cost,
+            'count': len(matched_items)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/debug-series")
+async def debug_series(payload: dict = Body(...)):
+    """Тестовый эндпоинт для проверки определения серий"""
+    try:
+        detected_items = payload.get('items', [])
+
+        results = []
+        for item in detected_items:
+            price_item, confidence = MATCHER.match(item) if MATCHER else (None, 0.0)
+
+            try:
+                price_val = float(price_item.get('Тариф с НДС, руб') or price_item.get('price') or 0.0)
+            except (ValueError, TypeError):
+                price_val = 0.0
+
+            results.append({
+                'detected': item,
+                'matched': {
+                    'article': price_item.get('Артикул') if price_item else None,
+                    'name': price_item.get('Наименование') if price_item else None,
+                    'price': price_val if price_item else None
+                } if price_item else None,
+                'confidence': confidence
+            })
+
+        return {
+            'results': results,
+            'total_matched': len([r for r in results if r['matched']])
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate-proposal")
 async def generate_proposal(payload: dict = Body(...)):

@@ -40,49 +40,73 @@ class SmartMatcher:
                 self.index['by_keyword'].setdefault(kw, []).append(item)
 
     def match(self, detected: Dict) -> Tuple[Optional[Dict], float]:
-        """Сопоставляет с прайсом по серии, номиналу и полюсности"""
-
+        """
+        Сопоставляет распознанный элемент с прайсом
+        Ищет по: серия + номинал + полюсность
+        """
         series = str(detected.get('series') or '')
         nominal = str(detected.get('nominal') or '')
         poles = str(detected.get('poles') or '')
 
-        # Извлекаем номинал
+        # Извлекаем числовой номинал
         amp = self._extract_amperage(nominal)
         if not amp:
             return None, 0.0
 
-        # Ищем по точному совпадению серии + номинала
+        candidates = []
+
+        # 1. ТОЧНОЕ СОВПАДЕНИЕ: серия + номинал + полюсность
         if series:
             for item in self.price_list:
                 item_name = item.get('Наименование', '')
-                # Проверяем серию
-                if series in item_name:
-                    # Проверяем номинал
+                # Очищаем серию от модификаторов (EN, TM, EM)
+                clean_series = series.replace(' EN', '').replace(' TM', '').replace(' EM', '')
+                if clean_series in item_name:
                     item_amp = self._extract_amperage(item_name)
                     if item_amp == amp:
-                        # Проверяем полюсность
                         if not poles or poles in item_name:
                             return item, 1.0
 
-        # Если точного нет, ищем по частичному совпадению
-        series_prefix = series.split('-')[0] if '-' in series else series
-        if series_prefix:
+        # 2. БАЗОВАЯ СЕРИЯ (без модификаторов) + номинал
+        if series:
+            base_series = series.split('-')[0] if '-' in series else series
             for item in self.price_list:
                 item_name = item.get('Наименование', '')
-                if series_prefix in item_name:
+                if base_series in item_name:
                     item_amp = self._extract_amperage(item_name)
                     if item_amp == amp:
-                        return item, 0.8
+                        if not poles or poles in item_name:
+                            candidates.append((item, 0.8))
 
-        # Если всё равно не нашли, ищем только по номиналу и типу
-        item_type = str(detected.get('type') or '')
-        if item_type:
-            for item in self.price_list:
-                item_name = item.get('Наименование', '')
-                if item_type in item_name.lower():
-                    item_amp = self._extract_amperage(item_name)
-                    if item_amp == amp:
-                        return item, 0.5
+        # 3. ТИП + НОМИНАЛ + ПОЛЮСНОСТЬ
+        item_type = str(detected.get('type') or 'автомат')
+        for item in self.price_list:
+            item_name = item.get('Наименование', '')
+            if 'Авт. выкл.' in item_name or 'автомат' in item_name.lower():
+                item_amp = self._extract_amperage(item_name)
+                if item_amp == amp:
+                    if not poles or poles in item_name:
+                        candidates.append((item, 0.5))
+
+        # 4. ТОЛЬКО НОМИНАЛ + ПОЛЮСНОСТЬ (самый широкий поиск)
+        for item in self.price_list:
+            item_name = item.get('Наименование', '')
+            item_amp = self._extract_amperage(item_name)
+            if item_amp == amp:
+                if not poles or poles in item_name:
+                    candidates.append((item, 0.3))
+
+        if candidates:
+            # Сортируем по уверенности и убираем дубли
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            seen = set()
+            unique = []
+            for item, score in candidates:
+                article = item.get('Артикул')
+                if article not in seen:
+                    seen.add(article)
+                    unique.append((item, score))
+            return unique[0] if unique else (None, 0.0)
 
         return None, 0.0
 
