@@ -337,6 +337,34 @@ async def generate_kp(
         logging.getLogger(logger_name).error(f"Failed to generate KP: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate KP: {str(e)}")
 
+@app.post("/api/generate-proposal")
+async def generate_proposal(payload: dict = Body(...)):
+    """
+    Генерирует коммерческое предложение на основе распознанных данных и скачивает Excel-файл.
+    """
+    try:
+        detected_items = payload.get('items', [])
+
+        if not detected_items:
+            raise HTTPException(status_code=400, detail="Нет данных для генерации")
+
+        # Сопоставляем с прайсом
+        matched_items, total_cost = match_with_price_list(detected_items)
+
+        # Генерируем Excel
+        from excel_generator import ExcelGenerator
+        generator = ExcelGenerator(matched_items, total_cost)
+        excel_data = generator.generate()
+
+        # Возвращаем файл
+        return StreamingResponse(
+            io.BytesIO(excel_data),
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={"Content-Disposition": "attachment; filename=commercial_proposal.xlsx"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/export-kp")
 async def export_kp(kp_data: Dict[str, Any] = Body(...)):
     """
