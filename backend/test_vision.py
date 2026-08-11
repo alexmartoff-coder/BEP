@@ -206,3 +206,18 @@ def test_combined_pdf_parser_merging():
 
          item_nm = next(i for i in board["items"] if i["mark"] == "QF1")
          assert item_nm["nominal"] == "C16"
+
+def test_combined_pdf_parser_empty_fallback():
+    """Test that combined parser returns warning when no elements are found by Vision or text."""
+    with patch("backend.pdf_parser.parse_equipment_from_pdf", return_value=[]), \
+         patch("backend.pdf_parser.extract_text_from_pdf", return_value=""):
+
+         # Call the combined parser
+         boards = asyncio.run(parse_pdf_combined_to_bom(b"empty content"))
+
+         assert len(boards) == 1
+         board = boards[0]
+         assert board["board_name"] == "Распознано Vision API"
+         assert len(board["items"]) == 1
+         assert board["items"][0]["name"] == "Vision не сработал, автоматы не распознаны"
+         assert board["items"][0]["price"] == 0.0

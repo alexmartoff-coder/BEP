@@ -97,10 +97,15 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
             if not article and not name:
                 continue
 
+            # Filter trash items before pricing or final KP formatting
+            from backend.pdf_parser import is_trash_item
+            if is_trash_item(name, str(item.get("nominal") or "")):
+                continue
+
             price = 0.0
             price_found = False
 
-            # 1. Exclusive active index lookup for Vision items (poles and current_a)
+            # 1. Exclusive active index lookup for Vision/fallback items (poles and current_a)
             if poles and current_a:
                 poles_norm = poles.upper().strip()
                 current_digits_match = re.search(r'\d+', current_a)
@@ -120,50 +125,11 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                     price_found = False
                     logger.info(f"[Pricing Index] Match not found for key '{key}' -> price is 0.0")
 
-            # 2. Classic matching fallback chain if not matched via poles/current (e.g. fallback text-based items)
+            # 2. If it does not have poles or current_a, set price strictly to 0
             else:
-                # 2.1 Exact match by cleaned article
-                if article:
-                    cleaned_art = clean_key(article)
-                    if cleaned_art in price_map:
-                        price = price_map[cleaned_art]
-                        price_found = True
-                    else:
-                        for pk in price_map:
-                            if cleaned_art == clean_key(pk):
-                                price = price_map[pk]
-                                price_found = True
-                                break
-
-                # 2.2 Substring/Partial matching by clean article
-                if not price_found and article:
-                    cleaned_art = clean_key(article)
-                    for pk in price_map:
-                        cleaned_pk = clean_key(pk)
-                        if cleaned_pk and (cleaned_art in cleaned_pk or cleaned_pk in cleaned_art):
-                            price = price_map[pk]
-                            price_found = True
-                            break
-
-                # 2.3 Match by clean name (exact name match)
-                if not price_found and name:
-                    cleaned_name = clean_key(name)
-                    if cleaned_name in price_map:
-                        price = price_map[cleaned_name]
-                        price_found = True
-                    else:
-                        for pk in price_map:
-                            if cleaned_name == clean_key(pk):
-                                price = price_map[pk]
-                                price_found = True
-                                break
-
-                # 2.4 Fallback matching via word overlap search in description/name
-                if not price_found and name:
-                    p, matched = word_overlap_match(name, price_map)
-                    if matched:
-                        price = p
-                        price_found = True
+                price = 0.0
+                price_found = False
+                logger.info(f"[Pricing Index] Item lacks poles or current_a -> price is strictly 0.0")
 
             # Compute total cost
             total_sum = price * qty
