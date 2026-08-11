@@ -22,6 +22,29 @@ MATCHER = None
 PROMPT_GENERATOR = None
 ANALYSIS = None
 
+# Hydrate on startup if active pricelist exists
+try:
+    active_path = "data/pricelists/active_pricelist.xlsx"
+    if os.path.exists(active_path):
+        with open(active_path, "rb") as f:
+            file_bytes = f.read()
+        from backend.price_parser import parse_price_list
+        from smart_matcher import SmartMatcher
+        from price_analyzer import PriceAnalyzer
+        from prompt_generator import PromptGenerator
+
+        temp_price_map = parse_price_list(file_bytes)
+        PRICE_LIST = []
+        for k, p in temp_price_map.items():
+            PRICE_LIST.append({"Артикул": k, "Наименование": k, "Тариф с НДС, руб": p})
+        MATCHER = SmartMatcher(PRICE_LIST)
+
+        analyzer = PriceAnalyzer(PRICE_LIST)
+        ANALYSIS = analyzer.analyze()
+        PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+except Exception:
+    pass
+
 app = FastAPI(
     title="Service for generating commercial offers (КП) for switchboard equipment",
     description="Backend for extracting PDF text and managing commercial offers directly against Excel price lists.",
@@ -74,6 +97,212 @@ async def get_active_pricelist():
         except Exception as e:
             return {"status": "success", "filename": "active_pricelist.xlsx"}
     return {"status": "empty", "filename": None}
+
+def load_pricelists_registry() -> List[Dict[str, Any]]:
+    registry_path = "data/pricelists/pricelists.json"
+    if os.path.exists(registry_path):
+        try:
+            with open(registry_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("files", [])
+        except Exception:
+            pass
+
+    files_list = []
+    dir_path = "data/pricelists"
+    if os.path.exists(dir_path):
+        for fname in os.listdir(dir_path):
+            if fname.endswith(('.xlsx', '.xls')) and fname != "active_pricelist.xlsx":
+                active_meta = False
+                metadata_path = "data/pricelists/metadata.json"
+                if os.path.exists(metadata_path):
+                    try:
+                        with open(metadata_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                            if meta.get("filename") == fname:
+                                active_meta = True
+                    except Exception:
+                        pass
+                files_list.append({
+                    "id": fname,
+                    "name": fname,
+                    "uploaded_at": "Неизвестно",
+                    "active": active_meta
+                })
+    return files_list
+
+def save_pricelists_registry(files: List[Dict[str, Any]]):
+    registry_path = "data/pricelists/pricelists.json"
+    os.makedirs("data/pricelists", exist_ok=True)
+    with open(registry_path, "w", encoding="utf-8") as f:
+        json.dump({"files": files}, f, ensure_ascii=False, indent=2)
+
+@app.get("/api/pricelists")
+async def get_pricelists():
+    """Возвращает список всех загруженных файлов прайс-листов"""
+    files = load_pricelists_registry()
+    return files
+
+@app.post("/api/pricelists/upload")
+async def upload_pricelist_file(file: UploadFile = File(...), activate: bool = Body(True)):
+    """Загружает новый прайс-лист Excel, сохраняет и парсит/индексирует его"""
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Price lists must be Excel spreadsheets (.xlsx, .xls).")
+
+    try:
+        import datetime
+        os.makedirs("data/pricelists", exist_ok=True)
+        file_bytes = await file.read()
+
+        safe_filename = os.path.basename(file.filename)
+        file_path = os.path.join("data/pricelists", safe_filename)
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+
+        file_index = build_and_save_index(file_bytes)
+        temp_price_map = parse_price_list(file_bytes)
+
+        files = load_pricelists_registry()
+        files = [f for f in files if f["id"] != safe_filename]
+
+        uploaded_at_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        new_file_meta = {
+            "id": safe_filename,
+            "name": safe_filename,
+            "uploaded_at": uploaded_at_str,
+            "active": bool(activate)
+        }
+
+        if activate:
+            for f in files:
+                f["active"] = False
+
+            active_path = "data/pricelists/active_pricelist.xlsx"
+            with open(active_path, "wb") as f:
+                f.write(file_bytes)
+
+            metadata = {"filename": safe_filename}
+            with open("data/pricelists/metadata.json", "w", encoding="utf-8") as mf:
+                json.dump(metadata, mf, ensure_ascii=False, indent=2)
+
+            index_path = "data/pricelists/active_index.json"
+            with open(index_path, "w", encoding="utf-8") as index_file:
+                json.dump(file_index, index_file, ensure_ascii=False, indent=2)
+
+            global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
+            PRICE_LIST = []
+            for k, p in temp_price_map.items():
+                PRICE_LIST.append({"Артикул": k, "Наименование": k, "Тариф с НДС, руб": p})
+            MATCHER = SmartMatcher(PRICE_LIST)
+
+            analyzer = PriceAnalyzer(PRICE_LIST)
+            ANALYSIS = analyzer.analyze()
+            PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+
+        files.append(new_file_meta)
+        save_pricelists_registry(files)
+
+        return {
+            "status": "success",
+            "file": new_file_meta
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload price list: {str(e)}")
+
+@app.delete("/api/pricelists/{filename}")
+async def delete_pricelist_file(filename: str):
+    """Удаляет файл прайс-листа"""
+    try:
+        safe_filename = os.path.basename(filename)
+        file_path = os.path.join("data/pricelists", safe_filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        files = load_pricelists_registry()
+        deleted_active = False
+        for f in files:
+            if f["id"] == safe_filename and f["active"]:
+                deleted_active = True
+
+        files = [f for f in files if f["id"] != safe_filename]
+
+        if deleted_active:
+            for path_to_del in ["data/pricelists/active_pricelist.xlsx", "data/pricelists/active_index.json", "data/pricelists/metadata.json"]:
+                if os.path.exists(path_to_del):
+                    os.remove(path_to_del)
+            global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
+            MATCHER = None
+            PRICE_LIST = []
+            PROMPT_GENERATOR = None
+            ANALYSIS = None
+
+        save_pricelists_registry(files)
+        return {"status": "success", "message": f"File {safe_filename} deleted successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete price list: {str(e)}")
+
+@app.post("/api/pricelists/{filename}/activate")
+async def activate_pricelist_file(filename: str):
+    """Делает выбранный прайс-лист активным"""
+    try:
+        import datetime
+        safe_filename = os.path.basename(filename)
+        file_path = os.path.join("data/pricelists", safe_filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found.")
+
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+
+        file_index = build_and_save_index(file_bytes)
+        temp_price_map = parse_price_list(file_bytes)
+
+        files = load_pricelists_registry()
+        found = False
+        for f in files:
+            if f["id"] == safe_filename:
+                f["active"] = True
+                found = True
+            else:
+                f["active"] = False
+
+        if not found:
+            files.append({
+                "id": safe_filename,
+                "name": safe_filename,
+                "uploaded_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "active": True
+            })
+
+        active_path = "data/pricelists/active_pricelist.xlsx"
+        with open(active_path, "wb") as f:
+            f.write(file_bytes)
+
+        metadata = {"filename": safe_filename}
+        with open("data/pricelists/metadata.json", "w", encoding="utf-8") as mf:
+            json.dump(metadata, mf, ensure_ascii=False, indent=2)
+
+        index_path = "data/pricelists/active_index.json"
+        with open(index_path, "w", encoding="utf-8") as index_file:
+            json.dump(file_index, index_file, ensure_ascii=False, indent=2)
+
+        global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
+        PRICE_LIST = []
+        for k, p in temp_price_map.items():
+            PRICE_LIST.append({"Артикул": k, "Наименование": k, "Тариф с НДС, руб": p})
+        MATCHER = SmartMatcher(PRICE_LIST)
+
+        analyzer = PriceAnalyzer(PRICE_LIST)
+        ANALYSIS = analyzer.analyze()
+        PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+
+        save_pricelists_registry(files)
+        return {"status": "success", "message": f"File {safe_filename} activated successfully."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to activate price list: {str(e)}")
 
 def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float]:
     """Сопоставляет распознанные элементы с прайсом"""
