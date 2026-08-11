@@ -40,68 +40,49 @@ class SmartMatcher:
                 self.index['by_keyword'].setdefault(kw, []).append(item)
 
     def match(self, detected: Dict) -> Tuple[Optional[Dict], float]:
-        """
-        Сопоставляет распознанный элемент с прайсом
-        Возвращает: (позиция_из_прайса, уверенность_совпадения)
-        """
-        candidates = []
+        """Сопоставляет с прайсом по серии, номиналу и полюсности"""
 
-        # 1. Поиск по серии + номиналу (точное совпадение)
-        series = detected.get('series')
-        nominal = detected.get('nominal')
+        series = str(detected.get('series') or '')
+        nominal = str(detected.get('nominal') or '')
+        poles = str(detected.get('poles') or '')
 
-        if series and nominal:
-            amp = self._extract_amperage(nominal)
-            if amp and series in self.index['by_series']:
-                for item in self.index['by_series'][series]:
-                    item_amp = self._extract_amperage(item['Наименование'])
-                    if item_amp == amp:
-                        return item, 1.0
+        # Извлекаем номинал
+        amp = self._extract_amperage(nominal)
+        if not amp:
+            return None, 0.0
 
-        # 2. Поиск по типу + номиналу
-        item_type = detected.get('type')
-        if item_type and nominal:
-            amp = self._extract_amperage(nominal)
-            if amp and item_type in self.index['by_type']:
-                for item in self.index['by_type'][item_type]:
-                    item_amp = self._extract_amperage(item['Наименование'])
-                    if item_amp and abs(item_amp - amp) <= 10:  # допуск 10А
-                        candidates.append((item, 0.8))
-
-        # 3. Поиск по ключевым словам
-        if not candidates:
-            name = detected.get('name', detected.get('mark', ''))
-            keywords = self._extract_keywords(name)
-            for kw in keywords:
-                if kw in self.index['by_keyword']:
-                    for item in self.index['by_keyword'][kw]:
-                        # Проверяем соответствие по типу
-                        if item_type and self._extract_type(item['Наименование']) == item_type:
-                            candidates.append((item, 0.7))
-                        else:
-                            candidates.append((item, 0.5))
-
-        # 4. Поиск по частичному совпадению названия
-        if not candidates and detected.get('name'):
-            search_name = detected['name'].lower()
+        # Ищем по точному совпадению серии + номинала
+        if series:
             for item in self.price_list:
-                item_name = item.get('Наименование', '').lower()
-                if search_name in item_name or item_name in search_name:
-                    similarity = SequenceMatcher(None, search_name, item_name).ratio()
-                    if similarity > 0.6:
-                        candidates.append((item, similarity))
+                item_name = item.get('Наименование', '')
+                # Проверяем серию
+                if series in item_name:
+                    # Проверяем номинал
+                    item_amp = self._extract_amperage(item_name)
+                    if item_amp == amp:
+                        # Проверяем полюсность
+                        if not poles or poles in item_name:
+                            return item, 1.0
 
-        if candidates:
-            # Сортируем по уверенности
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            # Убираем дубликаты
-            unique = []
-            seen = set()
-            for item, score in candidates:
-                if item.get('Артикул') not in seen:
-                    seen.add(item.get('Артикул'))
-                    unique.append((item, score))
-            return unique[0] if unique else (None, 0.0)
+        # Если точного нет, ищем по частичному совпадению
+        series_prefix = series.split('-')[0] if '-' in series else series
+        if series_prefix:
+            for item in self.price_list:
+                item_name = item.get('Наименование', '')
+                if series_prefix in item_name:
+                    item_amp = self._extract_amperage(item_name)
+                    if item_amp == amp:
+                        return item, 0.8
+
+        # Если всё равно не нашли, ищем только по номиналу и типу
+        item_type = str(detected.get('type') or '')
+        if item_type:
+            for item in self.price_list:
+                item_name = item.get('Наименование', '')
+                if item_type in item_name.lower():
+                    item_amp = self._extract_amperage(item_name)
+                    if item_amp == amp:
+                        return item, 0.5
 
         return None, 0.0
 
