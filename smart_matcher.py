@@ -39,74 +39,80 @@ class SmartMatcher:
             for kw in keywords:
                 self.index['by_keyword'].setdefault(kw, []).append(item)
 
+    def _infer_series(self, poles: str, amperage: int) -> str:
+        """Определяет серию на основе полюсности и номинала"""
+
+        # 3P автоматы
+        if poles == "3P":
+            if amperage >= 800:
+                return "NM8N-1600Q EN 3P"
+            elif amperage >= 250:
+                return "NM8N-250S EN 3P"
+            elif amperage >= 125:
+                return "NM8N-250S EN 3P"
+            elif amperage >= 63:
+                return "NM8N-250S EN 3P"
+            else:
+                return "NB2-40ZT 3P"
+
+        # 1P автоматы
+        elif poles == "1P":
+            if amperage >= 63:
+                return "NB2-80ZT 1P"
+            elif amperage >= 40:
+                return "NB2-40ZT 1P"
+            elif amperage >= 16:
+                return "NB2-40ZT 1P"
+            else:
+                return "NB2-40ZT 1P"
+
+        # 4P автоматы
+        elif poles == "4P":
+            if amperage >= 800:
+                return "NM8N-1600Q EN 4P"
+            elif amperage >= 250:
+                return "NM8N-250S EN 4P"
+            else:
+                return "NM8N-250S EN 4P"
+
+        return None
+
     def match(self, detected: Dict) -> Tuple[Optional[Dict], float]:
-        """
-        Сопоставляет распознанный элемент с прайсом
-        Ищет по: серия + номинал + полюсность
-        """
+        """Сопоставляет с прайсом с автоопределением серии"""
+
         series = str(detected.get('series') or '')
         nominal = str(detected.get('nominal') or '')
         poles = str(detected.get('poles') or '')
 
-        # Извлекаем числовой номинал
+        # Извлекаем номинал
         amp = self._extract_amperage(nominal)
         if not amp:
             return None, 0.0
 
-        candidates = []
+        # Если серия не определена - определяем по правилам
+        if not series:
+            series = self._infer_series(poles, amp)
+            if not series:
+                return None, 0.0
 
-        # 1. ТОЧНОЕ СОВПАДЕНИЕ: серия + номинал + полюсность
-        if series:
-            for item in self.price_list:
-                item_name = item.get('Наименование', '')
-                # Очищаем серию от модификаторов (EN, TM, EM)
-                clean_series = series.replace(' EN', '').replace(' TM', '').replace(' EM', '')
-                if clean_series in item_name:
-                    item_amp = self._extract_amperage(item_name)
-                    if item_amp == amp:
-                        if not poles or poles in item_name:
-                            return item, 1.0
-
-        # 2. БАЗОВАЯ СЕРИЯ (без модификаторов) + номинал
-        if series:
-            base_series = series.split('-')[0] if '-' in series else series
-            for item in self.price_list:
-                item_name = item.get('Наименование', '')
-                if base_series in item_name:
-                    item_amp = self._extract_amperage(item_name)
-                    if item_amp == amp:
-                        if not poles or poles in item_name:
-                            candidates.append((item, 0.8))
-
-        # 3. ТИП + НОМИНАЛ + ПОЛЮСНОСТЬ
-        item_type = str(detected.get('type') or 'автомат')
+        # Ищем в прайсе
         for item in self.price_list:
             item_name = item.get('Наименование', '')
-            if 'Авт. выкл.' in item_name or 'автомат' in item_name.lower():
+            # Проверяем серию (очищаем от модификаторов)
+            clean_series = series.replace(' EN', '').replace(' TM', '').replace(' EM', '')
+            if clean_series in item_name:
                 item_amp = self._extract_amperage(item_name)
                 if item_amp == amp:
-                    if not poles or poles in item_name:
-                        candidates.append((item, 0.5))
+                    return item, 1.0
 
-        # 4. ТОЛЬКО НОМИНАЛ + ПОЛЮСНОСТЬ (самый широкий поиск)
+        # Если не нашли - пробуем по базовой серии
+        base_series = series.split('-')[0] if '-' in series else series
         for item in self.price_list:
             item_name = item.get('Наименование', '')
-            item_amp = self._extract_amperage(item_name)
-            if item_amp == amp:
-                if not poles or poles in item_name:
-                    candidates.append((item, 0.3))
-
-        if candidates:
-            # Сортируем по уверенности и убираем дубли
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            seen = set()
-            unique = []
-            for item, score in candidates:
-                article = item.get('Артикул')
-                if article not in seen:
-                    seen.add(article)
-                    unique.append((item, score))
-            return unique[0] if unique else (None, 0.0)
+            if base_series in item_name:
+                item_amp = self._extract_amperage(item_name)
+                if item_amp == amp:
+                    return item, 0.8
 
         return None, 0.0
 
