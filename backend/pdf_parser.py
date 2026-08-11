@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from PIL import Image
 import pdfplumber
 from pdf2image import convert_from_bytes
@@ -58,7 +58,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 
     return extracted_text
 
-async def parse_pdf_combined_to_bom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
+async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Parses PDF into structured board groups.
     If Vision successfully returns items, COMPLETELY ignores the text-based parser
@@ -73,9 +73,9 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        vision_items = await parse_equipment_from_pdf(tmp_path)
+        vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt)
     except Exception as e:
-        logger.error(f"Error in Vision parser wrapper: {e}")
+        logger.error(f"[Vision] Error in Vision parser wrapper: {e}")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -95,25 +95,28 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
             current_val = current_digits_match.group(0) if current_digits_match else ""
 
             # Extract poles from type/mark/nominal, or default to 3P/1P
-            poles_val = "3P"  # standard fallback
-            if "1P" in nominal_str.upper() or "1P" in str(item.get("mark") or "").upper():
-                poles_val = "1P"
-            elif "2P" in nominal_str.upper():
-                poles_val = "2P"
-            elif "4P" in nominal_str.upper():
-                poles_val = "4P"
+            poles_val = str(item.get("poles") or "3P")  # prefer poles from Vision
+            if not poles_val or poles_val == "None":
+                poles_val = "3P"
+                if "1P" in nominal_str.upper() or "1P" in str(item.get("mark") or "").upper():
+                    poles_val = "1P"
+                elif "2P" in nominal_str.upper():
+                    poles_val = "2P"
+                elif "4P" in nominal_str.upper():
+                    poles_val = "4P"
 
             name_norm = f"Авт. выкл. {poles_val} {current_val}А" if current_val else str(item.get("mark") or "Автоматический выключатель")
 
             normalized_for_kp.append({
                 "article": str(item.get("mark") or ""),
                 "name": name_norm,
-                "qty": 1,
+                "qty": int(item.get("qty") or 1),
                 "unit": "шт",
                 "poles": poles_val,
                 "current_a": current_val,
                 # Keep original fields for backward-compatibility or trace debugging
                 "mark": item.get("mark"),
+                "series": item.get("series"),
                 "nominal": item.get("nominal"),
                 "type": item.get("type")
             })

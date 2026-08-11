@@ -6,7 +6,7 @@ import asyncio
 import base64
 import io
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import tempfile
 from PIL import Image, ImageEnhance
 from pdf2image import convert_from_path
@@ -107,7 +107,7 @@ def clean_json_response(text: str) -> str:
         text = "\n".join(lines).strip()
     return text
 
-async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
+async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Extracts equipment from PDF using OpenRouter API with google/gemma-4-26b-a4b-it:free model (primary)
     and google/gemma-4-31b-it:free (fallback if 404/429).
@@ -134,7 +134,7 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         )
 
         # Convert PDF to PIL images in an executor to avoid blocking the event loop
-        logger.info(f"[Vision] Converting PDF {pdf_path} to images...")
+        logger.info(f"[Vision] [Vision] Converting PDF {pdf_path} to images...")
         images = await asyncio.to_thread(convert_from_path, pdf_path, dpi=150)
 
         if not images:
@@ -147,7 +147,20 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
             logger.info(f"[Vision] PDF has {len(images)} pages. Limiting Vision API processing to first 10 pages.")
 
         # Prepare strict prompt as requested by the user
-        prompt = "Ты — инженер-сметчик. Проанализируй эту электрическую схему. Найди ВСЕ автоматические выключатели и защитные устройства. Для каждого выведи 'mark' (его обозначение на схеме, например QF1, QF2), 'nominal' (силу тока, например 10A, 16A) и 'type' (тип, например 'MCB' или 'RCD'). ВАЖНО: Не пиши НИКАКОГО текста, кроме JSON. Ответ должен быть строго в формате JSON массива: [{\"mark\":\"QF1\", \"nominal\":\"16A\", \"type\":\"MCB\"}]. Если номинал не читается, ставь null."
+        if custom_prompt:
+            prompt = custom_prompt
+            logger.info(f"[Vision] Using custom prompt: {custom_prompt[:150]}...")
+        else:
+            prompt = """Ты инженер по щитовому оборудованию. На схеме найди ВСЕ автоматические выключатели.
+Для каждого укажи:
+- mark (QF1, QF2… если есть)
+- nominal (125A, 63A, 16A, 630A…)
+- poles (1P или 3P)
+Группируй одинаковые (одинаковый nominal+poles) — можно вернуть по одному с полем qty.
+Игнорируй: адреса, штампы, кабели, «Сортер», «Резерв», примечания.
+Ответ ТОЛЬКО JSON-массив:
+[{"mark":"QF1","nominal":"125A","poles":"3P","qty":6}]"""
+            logger.info("[Vision] Using default fallback prompt.")
 
         # Format payload in OpenAI Vision API format
         content_payload = [{"type": "text", "text": prompt}]
@@ -238,15 +251,18 @@ async def parse_equipment_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
         elif isinstance(parsed_json, list):
             items_list = parsed_json
 
-        # Ensure all items match the new format with mark, nominal, type
+        # Ensure all items match the new format with mark, nominal, type, poles, etc.
         standardized_items = []
         for item in items_list:
             if not isinstance(item, dict):
                 continue
             standardized_items.append({
                 "mark": item.get("mark"),
+                "series": item.get("series"),
                 "nominal": item.get("nominal"),
-                "type": item.get("type")
+                "poles": item.get("poles"),
+                "type": item.get("type", "автомат"),
+                "qty": item.get("qty", 1)
             })
 
         logger.info(f"[Vision] Successfully parsed {len(standardized_items)} items using OpenRouter.")

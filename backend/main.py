@@ -274,10 +274,15 @@ async def generate_kp(
         # Create directory for price list storage
         os.makedirs("data/pricelists", exist_ok=True)
 
+        # 0. Get dynamically generated prompt if PROMPT_GENERATOR is initialized
+        custom_prompt = None
+        if PROMPT_GENERATOR:
+            custom_prompt = PROMPT_GENERATOR.generate()
+
         # 1. Parse PDF specification text and OpenRouter Vision combined
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes)
-        boards = await parse_pdf_combined_to_bom(pdf_bytes)
+        boards = await parse_pdf_combined_to_bom(pdf_bytes, custom_prompt=custom_prompt)
 
         # 2. Parse, merge and index uploaded price lists
         price_map = {}
@@ -324,7 +329,34 @@ async def generate_kp(
                 with open(index_path, "r", encoding="utf-8") as index_file:
                     index_map = json.load(index_file)
             else:
-                raise HTTPException(status_code=400, detail="Прайс-лист не найден. Пожалуйста, загрузите хотя бы один прайс-лист (.xlsx).")
+                # Do not raise error if we can still try to generate using fallback pricing or MATCHER
+                pass
+
+        # Match Vision items using MATCHER if MATCHER is initialized to resolve exact series, nominal, and prices
+        import logging
+        main_logger = logging.getLogger("generate_kp")
+        if MATCHER and boards:
+            main_logger.info("[Vision] MATCHER is initialized. Performing dynamic self-learning matching on board items...")
+            for board in boards:
+                for item in board.get("items", []):
+                    # Match against the dynamic self-learning matcher
+                    price_item, confidence = MATCHER.match(item)
+                    if price_item:
+                        try:
+                            price_val = float(price_item.get('Тариф с НДС, руб') or price_item.get('price') or 0.0)
+                        except (ValueError, TypeError):
+                            price_val = 0.0
+                        item["price"] = price_val
+                        item["article"] = price_item.get("Артикул") or item.get("article", "")
+                        item["name"] = price_item.get("Наименование") or f"Авт. выкл. {item.get('poles')} {item.get('current_a')}А"
+                        item["price_found"] = True
+                        main_logger.info(f"[Vision] Matcher exact match: {item.get('series')} -> {item['article']} (Price: {price_val}) with confidence {confidence}")
+                    else:
+                        item["price"] = 0.0
+                        item["price_found"] = False
+                        item["article"] = None
+                        item["name"] = f"Авт. выкл. {item.get('poles')} {item.get('current_a')}А" if item.get("current_a") else item.get("name", "Авт. выкл.")
+                        main_logger.info(f"[Vision] Matcher could not find a match for: {item.get('series') or item.get('name')}")
 
         # 3. Generate the preliminary commercial proposal
         kp_data = generate_preliminary_kp(boards, price_map, index_map)
