@@ -21,21 +21,22 @@ class MockCompletionResponse:
 def test_vision_parser_success():
     """Test successful Vision parser extraction and parsing with OpenRouter client and new schema."""
     mock_json_response = """
-    {
-      "shield_name": "ВРУ",
-      "items": [
-        {"article": "CHINT-001", "name": "Контактор", "current_a": "125", "poles": "3P", "qty": 3},
-        {"article": "CHINT-002", "name": "Реле времени", "qty": 1}
-      ]
-    }
+    [
+      {"mark": "QF1", "nominal": "C16", "type": "MCB"},
+      {"mark": "QF2", "nominal": "25A", "type": "MCB"}
+    ]
     """
 
     with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
          patch("backend.vision_parser.convert_from_path") as mock_convert, \
          patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake_key"}):
 
-        # Mock convert_from_path to return some dummy objects representing images
-        mock_convert.return_value = [MagicMock(), MagicMock()]
+        # Mock convert_from_path to return some dummy objects representing images with valid sizes
+        mock_img1 = MagicMock()
+        mock_img1.size = (100, 100)
+        mock_img2 = MagicMock()
+        mock_img2.size = (100, 100)
+        mock_convert.return_value = [mock_img1, mock_img2]
 
         # Mock OpenAI Client instance
         mock_client = MagicMock()
@@ -56,12 +57,12 @@ def test_vision_parser_success():
             result = asyncio.run(parse_equipment_from_pdf(pdf_path))
 
             assert len(result) == 2
-            # First item has current_a and poles, so it should be normalized to "Авт. выкл. 3P 125А"
-            assert result[0]["name"] == "Авт. выкл. 3P 125А"
-            assert result[0]["qty"] == 3
-            # Second item lacks current_a and poles, so it should fallback to its original name "Реле времени"
-            assert result[1]["name"] == "Реле времени"
-            assert result[1]["qty"] == 1
+            assert result[0]["mark"] == "QF1"
+            assert result[0]["nominal"] == "C16"
+            assert result[0]["type"] == "MCB"
+            assert result[1]["mark"] == "QF2"
+            assert result[1]["nominal"] == "25A"
+            assert result[1]["type"] == "MCB"
 
             # Test Cache Hit
             mock_convert.reset_mock()
@@ -74,22 +75,21 @@ def test_vision_parser_success():
                 os.remove(pdf_path)
 
 def test_vision_parser_duplicate_grouping():
-    """Test that Vision parser successfully groups duplicates with the same poles and current_a."""
+    """Test that Vision parser successfully returns devices in the correct format."""
     mock_json_response = """
-    {
-      "shield_name": "ШР",
-      "items": [
-        {"name": "Авт. выкл. 3P 16A", "current_a": "16", "poles": "3P", "qty": 2},
-        {"name": "Авт. выкл. 3P 16А", "current_a": "16A", "poles": "3P", "qty": 5}
-      ]
-    }
+    [
+      {"mark": "QF1", "nominal": "16A", "type": "MCB"},
+      {"mark": "QF2", "nominal": "16A", "type": "MCB"}
+    ]
     """
 
     with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
          patch("backend.vision_parser.convert_from_path") as mock_convert, \
          patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake_key"}):
 
-        mock_convert.return_value = [MagicMock()]
+        mock_img = MagicMock()
+        mock_img.size = (100, 100)
+        mock_convert.return_value = [mock_img]
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = MockCompletionResponse(mock_json_response)
@@ -107,12 +107,9 @@ def test_vision_parser_duplicate_grouping():
 
             result = asyncio.run(parse_equipment_from_pdf(pdf_path))
 
-            # Since both are 3P 16A, they should be grouped into a single item with qty = 2 + 5 = 7
-            assert len(result) == 1
-            assert result[0]["name"] == "Авт. выкл. 3P 16А"
-            assert result[0]["qty"] == 7
-            assert result[0]["poles"] == "3P"
-            assert result[0]["current_a"] == "16"
+            assert len(result) == 2
+            assert result[0]["mark"] == "QF1"
+            assert result[1]["mark"] == "QF2"
 
         finally:
             if os.path.exists(pdf_path):
@@ -121,18 +118,18 @@ def test_vision_parser_duplicate_grouping():
 def test_vision_parser_fallback_404():
     """Test that vision parser successfully falls back to Gemma 4 when primary model returns 404/429."""
     mock_json_response = """
-    {
-      "items": [
-        {"article": "FALLBACK-001", "name": "Шкаф", "qty": 1, "unit": "шт"}
-      ]
-    }
+    [
+      {"mark": "FALLBACK-001", "nominal": "C16", "type": "MCB"}
+    ]
     """
 
     with patch("backend.vision_parser.OpenAI") as mock_openai_class, \
          patch("backend.vision_parser.convert_from_path") as mock_convert, \
          patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake_key"}):
 
-        mock_convert.return_value = [MagicMock()]
+        mock_img = MagicMock()
+        mock_img.size = (100, 100)
+        mock_convert.return_value = [mock_img]
 
         mock_client = MagicMock()
 
@@ -164,8 +161,8 @@ def test_vision_parser_fallback_404():
             result = asyncio.run(parse_equipment_from_pdf(pdf_path))
 
             assert len(result) == 1
-            assert result[0]["article"] == "FALLBACK-001"
-            assert result[0]["qty"] == 1
+            assert result[0]["mark"] == "FALLBACK-001"
+            assert result[0]["nominal"] == "C16"
 
             # Verify that create was indeed called twice
             assert mock_client.chat.completions.create.call_count == 2
@@ -184,8 +181,8 @@ def test_vision_parser_no_api_key():
 def test_combined_pdf_parser_merging():
     """Test combining and merging logic of Vision + text-based parser."""
     mock_vision_items = [
-        {"article": "NM8N-1600S", "name": "Автоматический выключатель", "qty": 2, "unit": "шт"},
-        {"article": "NEW-ART", "name": "Новый контактор", "qty": 5, "unit": "шт"}
+        {"mark": "QF1", "nominal": "C16", "type": "MCB"},
+        {"mark": "QF2", "nominal": "25A", "type": "MCB"}
     ]
 
     # We will patch extract_text_from_pdf to return simple text
@@ -207,8 +204,5 @@ def test_combined_pdf_parser_merging():
          assert board["board_name"] == "Распознано Vision API"
          assert len(board["items"]) == 2
 
-         item_nm = next(i for i in board["items"] if i["article"] == "NM8N-1600S")
-         assert item_nm["qty"] == 2
-
-         item_new = next(i for i in board["items"] if i["article"] == "NEW-ART")
-         assert item_new["qty"] == 5
+         item_nm = next(i for i in board["items"] if i["mark"] == "QF1")
+         assert item_nm["nominal"] == "C16"
