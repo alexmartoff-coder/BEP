@@ -5,12 +5,22 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import os
 import io
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from backend.pdf_parser import extract_text_from_pdf, parse_pdf_combined_to_bom
 from backend.bom_parser import analyze_equipment
 from backend.price_parser import parse_price_list, build_and_save_index
 from backend.kp_generator import generate_preliminary_kp, export_kp_to_excel
+
+# Self-Learning Price Matcher imports
+from price_analyzer import PriceAnalyzer
+from prompt_generator import PromptGenerator
+from smart_matcher import SmartMatcher
+
+PRICE_LIST = []
+MATCHER = None
+PROMPT_GENERATOR = None
+ANALYSIS = None
 
 app = FastAPI(
     title="Service for generating commercial offers (КП) for switchboard equipment",
@@ -65,11 +75,125 @@ async def get_active_pricelist():
             return {"status": "success", "filename": "active_pricelist.xlsx"}
     return {"status": "empty", "filename": None}
 
+def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float]:
+    """Сопоставляет распознанные элементы с прайсом"""
+    global MATCHER
+
+    if not MATCHER:
+        # Fallback to local default check if MATCHER is not initialized yet
+        price_list = [{"mark": "C16", "price": 180}]
+        matched_items = []
+        total_cost = 0.0
+        for item in detected_items:
+            item_mark = str(item.get("mark") or "")
+            item_nominal = str(item.get("nominal") or "")
+            matched_price = None
+            for p_item in price_list:
+                p_mark = p_item["mark"]
+                if p_mark in item_nominal or p_mark in item_mark:
+                    matched_price = p_item["price"]
+                    break
+            item_copy = dict(item)
+            if matched_price is not None:
+                item_copy["price"] = matched_price
+                total_cost += matched_price
+                item_copy["confidence"] = 1.0
+            else:
+                item_copy["price"] = None
+                item_copy["warning"] = "Не найдено в прайсе"
+            matched_items.append(item_copy)
+        return matched_items, total_cost
+
+    matched_items = []
+    total_cost = 0.0
+
+    for item in detected_items:
+        price_item, confidence = MATCHER.match(item)
+        if price_item:
+            try:
+                price_val = float(price_item.get('Тариф с НДС, руб') or price_item.get('price') or 0.0)
+            except (ValueError, TypeError):
+                price_val = 0.0
+
+            try:
+                price_no_vat = float(price_item.get('Тариф без НДС, руб') or 0.0)
+            except (ValueError, TypeError):
+                price_no_vat = 0.0
+
+            matched_items.append({
+                **item,
+                'article': price_item.get('Артикул'),
+                'price': price_val,
+                'price_no_vat': price_no_vat,
+                'matched_name': price_item.get('Наименование'),
+                'confidence': round(confidence, 2)
+            })
+            total_cost += price_val
+        else:
+            matched_items.append({
+                **item,
+                'article': None,
+                'price': None,
+                'matched_name': None,
+                'warning': 'Не найдено в прайсе'
+            })
+
+    return matched_items, total_cost
+
+@app.post("/api/load-price")
+async def load_price(payload: dict = Body(...)):
+    """
+    Загружает прайс-лист в систему
+    Ожидает: { "price_list": [...] }
+    """
+    global PRICE_LIST, MATCHER, PROMPT_GENERATOR, ANALYSIS
+    try:
+        PRICE_LIST = payload.get('price_list', [])
+        if not PRICE_LIST:
+            raise HTTPException(status_code=400, detail="Прайс-лист пуст")
+
+        # Анализируем прайс
+        analyzer = PriceAnalyzer(PRICE_LIST)
+        ANALYSIS = analyzer.analyze()
+
+        # Создаем матчер
+        MATCHER = SmartMatcher(PRICE_LIST)
+
+        # Генерируем промпт
+        PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+        generated_prompt = PROMPT_GENERATOR.generate()
+
+        return {
+            'status': 'success',
+            'items_count': len(PRICE_LIST),
+            'analysis': ANALYSIS,
+            'generated_prompt': generated_prompt,
+            'prompt_preview': generated_prompt[:300] + '...'
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/price-stats")
+async def get_price_stats():
+    """Возвращает статистику по загруженному прайсу"""
+    if not ANALYSIS:
+        raise HTTPException(status_code=400, detail="Прайс не загружен")
+    return ANALYSIS
+
+@app.get("/api/generate-prompt")
+async def generate_prompt():
+    """Возвращает сгенерированный промпт для AI"""
+    if not PROMPT_GENERATOR:
+        raise HTTPException(status_code=400, detail="Прайс не загружен")
+    return {
+        'prompt': PROMPT_GENERATOR.generate()
+    }
+
 @app.post("/api/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     """
     Accepts a PDF file, extracts its text content, uses the OpenRouter Vision API to extract
-    devices with mark, nominal, and type, maps them against a local price list stub,
+    devices with mark, nominal, and type, maps them against the loaded price list,
     and returns the details and total cost.
     """
     if not file.filename.lower().endswith('.pdf'):
@@ -107,33 +231,7 @@ async def upload_pdf(file: UploadFile = File(...)):
                 {"mark": "QF2", "nominal": "25A", "type": "MCB"}
             ]
 
-        # Define local price list stub
-        price_list = [{"mark": "C16", "price": 180}]
-
-        matched_items = []
-        total_cost = 0.0
-
-        # Perform price matching
-        for item in vision_items:
-            item_mark = str(item.get("mark") or "")
-            item_nominal = str(item.get("nominal") or "")
-
-            matched_price = None
-            for p_item in price_list:
-                p_mark = p_item["mark"]
-                # Match: if price_item["mark"] is in nominal or mark
-                if p_mark in item_nominal or p_mark in item_mark:
-                    matched_price = p_item["price"]
-                    break
-
-            item_copy = dict(item)
-            if matched_price is not None:
-                item_copy["price"] = matched_price
-                total_cost += matched_price
-            else:
-                item_copy["price"] = 0.0
-
-            matched_items.append(item_copy)
+        matched_items, total_cost = match_with_price_list(vision_items)
 
         return JSONResponse(content={
             "status": "success",
