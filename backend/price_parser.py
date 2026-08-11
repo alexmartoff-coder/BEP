@@ -1,5 +1,5 @@
 import openpyxl
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional
 import io
 import re
 
@@ -22,18 +22,14 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     sheet = wb.active
 
-    # Identify key columns
     col_article_idx = None
     col_name_idx = None
     col_price_idx = None
 
     rows = list(sheet.iter_rows(values_only=True))
 
-    # Look for header row in the first 35 rows
     for r_idx, row in enumerate(rows[:35]):
         row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
-
-        # Look for headers
         art_found = any("артикул" in val or "код" in val or "ref" in val or "article" in val for val in row_vals)
         price_found = any("цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val for val in row_vals)
 
@@ -44,12 +40,10 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
                 elif "наименован" in val or "описание" in val or "модель" in val or "номенклатура" in val:
                     col_name_idx = c_idx
                 elif "цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val:
-                    # Prefer prices with VAT if explicitly mentioned
                     if col_price_idx is None or "ндс" in val:
                         col_price_idx = c_idx
             break
 
-    # Default columns if not detected
     if col_article_idx is None:
         col_article_idx = 0
     if col_price_idx is None:
@@ -57,7 +51,6 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
     if col_name_idx is None:
         col_name_idx = 1
 
-    # Iterate and extract price maps
     for row in rows:
         if not any(row):
             continue
@@ -69,11 +62,9 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         if not art_val and not name_val:
             continue
 
-        # Parse price as float
         try:
             if price_val is not None:
                 price_str = str(price_val).strip()
-                # Clean currency symbols, spaces, etc.
                 price_clean = "".join(c for c in price_str if c.isdigit() or c == "." or c == ",")
                 price_clean = price_clean.replace(",", ".")
                 price = float(price_clean)
@@ -82,7 +73,6 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         except ValueError:
             continue
 
-        # Store clean mapping
         if art_val:
             price_map[clean_key(art_val)] = price
         if name_val:
@@ -90,15 +80,13 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
 
     return price_map
 
-def build_and_save_index(file_bytes: bytes) -> Dict[str, Any]:
+def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
     """
-    Parses the price list Excel, extracts poles and current_a, builds the structured index,
-    and returns a dictionary representing the index.
+    Parses price list Excel and extracts positions into a unified format list.
     """
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     sheet = wb.active
 
-    # Identify key columns using header heuristics
     col_article_idx = None
     col_name_idx = None
     col_price_idx = None
@@ -128,7 +116,7 @@ def build_and_save_index(file_bytes: bytes) -> Dict[str, Any]:
     if col_name_idx is None:
         col_name_idx = 1
 
-    index_map = {}
+    unified_items = []
 
     for row in rows:
         if not any(row):
@@ -155,29 +143,60 @@ def build_and_save_index(file_bytes: bytes) -> Dict[str, Any]:
         name_str = str(name_val).strip()
         article_str = str(art_val).strip() if art_val is not None else ""
 
-        # 1. Extract poles (e.g. "3P")
-        poles = ""
-        # Match "1P", "2P", "3P", "4P", "1П", "2П", "3П", "4П", "1полюс", "3полюс"
+        # 1. Extract poles
+        poles = None
         poles_match = re.search(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', name_str, re.IGNORECASE)
         if poles_match:
             poles = f"{poles_match.group(1)}P"
 
-        # 2. Extract current_a (e.g. "125")
-        current_a = ""
-        # Match standalone ratings like "16А", "16A", "160A", etc.
+        # 2. Extract current_a (int or None)
+        current_a = None
         current_match = re.search(r'\b(\d+)\s*(?:А|A|а|a)\b', name_str)
         if current_match:
-            current_a = current_match.group(1)
+            try:
+                current_a = int(current_match.group(1))
+            except ValueError:
+                pass
 
-        # If successfully extracted both poles and current_a, add to index!
+        # 3. Extract series
+        series = None
+        patterns = [
+            r'(NM8[N,S]-\d+[A-Z]?)',
+            r'(NVF7-\d+[A-Z]?)',
+            r'(NKB1-\d+)',
+            r'(NB[2,8]-\d+[A-Z]?)',
+            r'(NC[1,8]-\d+)',
+            r'(NR[8,E]-\d+)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, name_str)
+            if match:
+                series = match.group(0)
+                break
+
+        unified_items.append({
+            "article": article_str,
+            "name": name_str,
+            "price": price,
+            "current_a": current_a,
+            "poles": poles,
+            "series": series
+        })
+
+    return unified_items
+
+def build_and_save_index(file_bytes: bytes) -> Dict[str, Any]:
+    """
+    Builds structured index {poles}_{current_a} -> list of unified positions.
+    """
+    unified_items = parse_excel_to_unified(file_bytes)
+    index_map = {}
+    for item in unified_items:
+        poles = item.get("poles")
+        current_a = item.get("current_a")
         if poles and current_a:
             key = f"{poles}_{current_a}"
             if key not in index_map:
                 index_map[key] = []
-            index_map[key].append({
-                "article": article_str,
-                "name": name_str,
-                "price": price
-            })
-
+            index_map[key].append(item)
     return index_map

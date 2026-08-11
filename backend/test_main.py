@@ -127,3 +127,39 @@ def test_build_and_save_index():
     assert "3P_125" in custom_index
     assert custom_index["3P_125"][0]["article"] == "CHINT-125"
     assert custom_index["3P_125"][0]["price"] == 5000.0
+
+def test_pricelists_api_endpoints():
+    """Test Pricelists file management endpoints (list, upload, delete, activate)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Артикул", "Наименование", "Цена"])
+    ws.append(["CHINT-125", "Выключатель 3P 125A CHINT", "5000.00"])
+
+    out = io.BytesIO()
+    wb.save(out)
+    custom_bytes = out.getvalue()
+
+    # 1. Upload price list
+    files = {"file": ("test_price.xlsx", custom_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    response = client.post("/api/pricelists/upload", files=files, data={"activate": "true"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    assert response.json()["file"]["id"] == "test_price.xlsx"
+    assert response.json()["file"]["active"] is True
+
+    # 2. Get list of price lists
+    response = client.get("/api/pricelists")
+    assert response.status_code == 200
+    files_list = response.json()
+    assert len(files_list) > 0
+    assert any(f["id"] == "test_price.xlsx" for f in files_list)
+
+    # 3. Activate price list
+    response = client.post("/api/pricelists/test_price.xlsx/activate")
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+
+    # 4. Delete price list
+    response = client.delete("/api/pricelists/test_price.xlsx")
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
