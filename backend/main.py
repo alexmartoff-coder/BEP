@@ -308,6 +308,9 @@ def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float
     """Сопоставляет распознанные элементы с прайсом"""
     global MATCHER
 
+    import logging
+    logger = logging.getLogger("match_with_price_list")
+
     if not MATCHER:
         # Fallback to local default check if MATCHER is not initialized yet
         price_list = [{"mark": "C16", "price": 180.0}]
@@ -323,19 +326,24 @@ def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float
                     matched_price = p_item["price"]
                     break
 
+            price_val = float(matched_price) if matched_price is not None else 0.0
+            article_val = "ART-C16" if matched_price is not None else None
+            name_val = "Авт. выкл. C16" if matched_price is not None else None
+
             matched_items.append({
                 'mark': item.get('mark'),
                 'series': item.get('series'),
                 'nominal': item.get('nominal'),
                 'poles': item.get('poles'),
-                'article': "ART-C16" if matched_price is not None else None,
-                'matched_name': "Авт. выкл. C16" if matched_price is not None else None,
-                'price': matched_price if matched_price is not None else 0.0,
+                'article': article_val,
+                'matched_name': name_val,
+                'price': price_val,
                 'confidence': 1.0 if matched_price is not None else 0.0,
                 'warning': None if matched_price is not None else 'Не найдено в прайсе'
             })
             if matched_price is not None:
-                total_cost += matched_price
+                total_cost += price_val
+                logger.info(f"[Fallback Matcher] Matched item -> article: '{article_val}', name: '{name_val}', price: {price_val}")
         return matched_items, total_cost
 
     matched_items = []
@@ -345,21 +353,26 @@ def match_with_price_list(detected_items: List[Dict]) -> Tuple[List[Dict], float
         price_item, confidence = MATCHER.match(item)
         if price_item:
             try:
+                # Strictly parse price, default to 0.0 if not float
                 price_val = float(price_item.get('Тариф с НДС, руб') or price_item.get('price') or 0.0)
             except (ValueError, TypeError):
                 price_val = 0.0
+
+            article_val = price_item.get('Артикул') or price_item.get('article')
+            name_val = price_item.get('Наименование') or price_item.get('name')
 
             matched_items.append({
                 'mark': item.get('mark'),
                 'series': item.get('series'),
                 'nominal': item.get('nominal'),
                 'poles': item.get('poles'),
-                'article': price_item.get('Артикул'),
-                'matched_name': price_item.get('Наименование'),
+                'article': article_val,
+                'matched_name': name_val,
                 'price': price_val,
                 'confidence': confidence
             })
             total_cost += price_val
+            logger.info(f"[Vision Matcher] Matched item -> article: '{article_val}', name: '{name_val}', price: {price_val}")
         else:
             matched_items.append({
                 'mark': item.get('mark'),
