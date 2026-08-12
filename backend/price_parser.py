@@ -83,9 +83,10 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         try:
             if price_val is not None:
                 price_str = str(price_val).strip()
-                # Clean currency symbols, spaces, etc.
-                price_clean = "".join(c for c in price_str if c.isdigit() or c == "." or c == ",")
+                # Clean currency symbols, spaces, and non-breaking spaces strictly!
+                price_clean = re.sub(r'[\s\xa0\u200b\u202f\t]+', '', price_str)
                 price_clean = price_clean.replace(",", ".")
+                price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
                 price = float(price_clean)
             else:
                 continue
@@ -166,8 +167,10 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         try:
             if price_val is not None:
                 price_str = str(price_val).strip()
-                price_clean = "".join(c for c in price_str if c.isdigit() or c == "." or c == ",")
+                # Clean currency symbols, spaces, and non-breaking spaces strictly!
+                price_clean = re.sub(r'[\s\xa0\u200b\u202f\t]+', '', price_str)
                 price_clean = price_clean.replace(",", ".")
+                price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
                 price = float(price_clean)
             else:
                 continue
