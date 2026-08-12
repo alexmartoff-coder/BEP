@@ -103,6 +103,7 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     lines = text.split("\n")
     grouped = {}
 
+    from backend.price_parser import extract_current_a_from_name
     for line in lines:
         line_clean = line.strip()
         if not line_clean:
@@ -116,12 +117,12 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         poles_match = re.search(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE)
         poles_val = f"{poles_match.group(1)}P" if poles_match else "3P"
 
-        # Extract amperage: standalone NNN A / А (including special incomers like 630A, 504A)
-        current_match = re.search(r'\b(\d+)\s*(?:А|A|а|a)\b', line_clean)
-        if not current_match:
+        # Extract amperage using the highly intelligent amperage extractor
+        extracted_amp = extract_current_a_from_name(line_clean)
+        if extracted_amp is None:
             continue
 
-        current_val = current_match.group(1)
+        current_val = str(extracted_amp)
 
         key = (poles_val, current_val)
         grouped[key] = grouped.get(key, 0) + 1
