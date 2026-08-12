@@ -27,29 +27,46 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
     col_price_idx = None
 
     rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        return price_map
 
+    # Heuristically detect columns
     for r_idx, row in enumerate(rows[:35]):
         row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
-        art_found = any("артикул" in val or "код" in val or "ref" in val or "article" in val for val in row_vals)
-        price_found = any("цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val for val in row_vals)
+
+        art_found = any("артикул" in val or "код" in val or "article" in val for val in row_vals)
+        price_found = any("цена" in val or "тариф" in val or "price" in val or "стоимость" in val for val in row_vals)
 
         if art_found or price_found:
             for c_idx, val in enumerate(row_vals):
-                if "артикул" in val or "код" in val or "ref" in val or "article" in val:
+                val_clean = val.lower().strip()
+                if any(k in val_clean for k in ["артикул", "код", "article"]):
                     col_article_idx = c_idx
-                elif "наименован" in val or "описание" in val or "модель" in val or "номенклатура" in val:
+                elif any(k in val_clean for k in ["наименование", "описание", "name"]):
                     col_name_idx = c_idx
-                elif "цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val:
-                    if col_price_idx is None or "ндс" in val:
+                elif any(k in val_clean for k in ["тариф с ндс", "цена с ндс", "цена", "стоимость", "price", "тариф"]):
+                    if col_price_idx is None or "ндс" in val_clean or "тариф с ндс" in val_clean or "цена с ндс" in val_clean:
                         col_price_idx = c_idx
             break
 
+    # Prevent article and price columns from overlapping!
+    if col_article_idx == col_price_idx and col_article_idx is not None:
+        col_price_idx = None
+
+    # Default columns if not detected
     if col_article_idx is None:
         col_article_idx = 0
-    if col_price_idx is None:
-        col_price_idx = 2
     if col_name_idx is None:
         col_name_idx = 1
+
+    if col_price_idx is None:
+        # Search for a column that is neither article nor name column
+        for c in range(len(rows[0])):
+            if c != col_article_idx and c != col_name_idx:
+                col_price_idx = c
+                break
+        if col_price_idx is None:
+            col_price_idx = 2
 
     for row in rows:
         if not any(row):
@@ -62,9 +79,11 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         if not art_val and not name_val:
             continue
 
+        # Parse price strictly as float
         try:
             if price_val is not None:
                 price_str = str(price_val).strip()
+                # Clean currency symbols, spaces, etc.
                 price_clean = "".join(c for c in price_str if c.isdigit() or c == "." or c == ",")
                 price_clean = price_clean.replace(",", ".")
                 price = float(price_clean)
@@ -73,7 +92,8 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         except ValueError:
             continue
 
-        if art_val:
+        # Store clean mapping, ensuring the article code itself is never used as the price
+        if art_val and str(art_val).strip() != price_str:
             price_map[clean_key(art_val)] = price
         if name_val:
             price_map[clean_key(name_val)] = price
@@ -92,29 +112,43 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
     col_price_idx = None
 
     rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        return []
 
     for r_idx, row in enumerate(rows[:35]):
         row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
-        art_found = any("артикул" in val or "код" in val or "ref" in val or "article" in val for val in row_vals)
-        price_found = any("цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val for val in row_vals)
+        art_found = any("артикул" in val or "код" in val or "article" in val for val in row_vals)
+        price_found = any("цена" in val or "тариф" in val or "price" in val or "стоимость" in val for val in row_vals)
 
         if art_found or price_found:
             for c_idx, val in enumerate(row_vals):
-                if "артикул" in val or "код" in val or "ref" in val or "article" in val:
+                val_clean = val.lower().strip()
+                if any(k in val_clean for k in ["артикул", "код", "article"]):
                     col_article_idx = c_idx
-                elif "наименован" in val or "описание" in val or "модель" in val or "номенклатура" in val:
+                elif any(k in val_clean for k in ["наименование", "описание", "name"]):
                     col_name_idx = c_idx
-                elif "цена" in val or "тариф" in val or "retail" in val or "розня" in val or "стоимость" in val:
-                    if col_price_idx is None or "ндс" in val:
+                elif any(k in val_clean for k in ["тариф с ндс", "цена с ндс", "цена", "стоимость", "price", "тариф"]):
+                    if col_price_idx is None or "ндс" in val_clean or "тариф с ндс" in val_clean or "цена с ндс" in val_clean:
                         col_price_idx = c_idx
             break
 
+    # Prevent article and price columns from overlapping!
+    if col_article_idx == col_price_idx and col_article_idx is not None:
+        col_price_idx = None
+
     if col_article_idx is None:
         col_article_idx = 0
-    if col_price_idx is None:
-        col_price_idx = 2
     if col_name_idx is None:
         col_name_idx = 1
+
+    if col_price_idx is None:
+        # Search for a column that is neither article nor name column
+        for c in range(len(rows[0])):
+            if c != col_article_idx and c != col_name_idx:
+                col_price_idx = c
+                break
+        if col_price_idx is None:
+            col_price_idx = 2
 
     unified_items = []
 
