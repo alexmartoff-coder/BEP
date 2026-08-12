@@ -239,8 +239,38 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[st
 
     logger.info(f"[Vision] {filtered_trash_count} items filtered as trash")
 
+    # Group identical items (by poles and current_a)
+    grouped_valid_items = []
+    grouped_map = {}
+    for vit in valid_items:
+        p_val = str(vit.get("poles") or "").upper().strip()
+        c_val = str(vit.get("current_a") or "")
+        q_val = int(vit.get("qty") or 1)
+
+        if p_val and c_val:
+            g_key = (p_val, c_val)
+        else:
+            g_key = ("RAW", str(vit.get("name") or vit.get("mark") or ""))
+
+        if g_key in grouped_map:
+            grouped_map[g_key]["qty"] += q_val
+        else:
+            grouped_map[g_key] = {
+                "article": vit.get("article"),
+                "name": vit.get("name"),
+                "qty": q_val,
+                "unit": "шт",
+                "poles": p_val,
+                "current_a": c_val,
+                "mark": vit.get("mark"),
+                "series": vit.get("series"),
+                "nominal": vit.get("nominal"),
+                "type": vit.get("type")
+            }
+    grouped_valid_items = list(grouped_map.values())
+
     # 4. If both Vision and text fallback yield 0 valid elements
-    if not valid_items:
+    if not grouped_valid_items:
         logger.info("[Vision] No valid items found. Returning warning annotation.")
         return [{
             "board_name": "Распознано Vision API",
@@ -258,5 +288,5 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[st
 
     return [{
         "board_name": "Распознано Vision API",
-        "items": valid_items
+        "items": grouped_valid_items
     }]
