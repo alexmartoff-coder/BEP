@@ -28,15 +28,19 @@ try:
     if os.path.exists(active_path):
         with open(active_path, "rb") as f:
             file_bytes = f.read()
-        from backend.price_parser import parse_price_list
+        from backend.price_parser import parse_price_list_raw
         from smart_matcher import SmartMatcher
         from price_analyzer import PriceAnalyzer
         from prompt_generator import PromptGenerator
 
-        temp_price_map = parse_price_list(file_bytes)
+        raw_list = parse_price_list_raw(file_bytes)
         PRICE_LIST = []
-        for k, p in temp_price_map.items():
-            PRICE_LIST.append({"Артикул": k, "Наименование": k, "Тариф с НДС, руб": p})
+        for item in raw_list:
+            PRICE_LIST.append({
+                "Артикул": item["Артикул"],
+                "Наименование": item["Наименование"],
+                "Тариф с НДС, руб": item["Тариф с НДС, руб"]
+            })
         MATCHER = SmartMatcher(PRICE_LIST)
 
         analyzer = PriceAnalyzer(PRICE_LIST)
@@ -192,8 +196,14 @@ async def upload_pricelist_file(file: UploadFile = File(...), activate: bool = B
 
             global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
             PRICE_LIST = []
-            for k, p in temp_price_map.items():
-                PRICE_LIST.append({"Артикул": k, "Наименование": k, "Тариф с НДС, руб": p})
+            from backend.price_parser import parse_price_list_raw
+            raw_list = parse_price_list_raw(file_bytes)
+            for item in raw_list:
+                PRICE_LIST.append({
+                    "Артикул": item["Артикул"],
+                    "Наименование": item["Наименование"],
+                    "Тариф с НДС, руб": item["Тариф с НДС, руб"]
+                })
             MATCHER = SmartMatcher(PRICE_LIST)
 
             analyzer = PriceAnalyzer(PRICE_LIST)
@@ -289,8 +299,14 @@ async def activate_pricelist_file(filename: str):
 
         global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
         PRICE_LIST = []
-        for k, p in temp_price_map.items():
-            PRICE_LIST.append({"Артикул": k, "Наименование": k, "Тариф с НДС, руб": p})
+        from backend.price_parser import parse_price_list_raw
+        raw_list = parse_price_list_raw(file_bytes)
+        for item in raw_list:
+            PRICE_LIST.append({
+                "Артикул": item["Артикул"],
+                "Наименование": item["Наименование"],
+                "Тариф с НДС, руб": item["Тариф с НДС, руб"]
+            })
         MATCHER = SmartMatcher(PRICE_LIST)
 
         analyzer = PriceAnalyzer(PRICE_LIST)
