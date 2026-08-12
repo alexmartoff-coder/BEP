@@ -2,6 +2,9 @@ import openpyxl
 from typing import Dict, Any, List, Tuple, Optional
 import io
 import re
+import logging
+
+logger = logging.getLogger("price_parser")
 
 def clean_key(val: Any) -> str:
     """Cleans up a code/article/name to allow flexible matching (removes hyphens, spaces, slashes, uppercase)."""
@@ -10,6 +13,59 @@ def clean_key(val: Any) -> str:
     # Convert to uppercase string, strip spaces, remove hyphens and slashes
     s = str(val).strip().upper()
     return re.sub(r'[^A-Z0-9А-Я]', '', s)
+
+def extract_current_a_from_name(name_str: str) -> Optional[int]:
+    """
+    Intelligently extracts the nominal current rating (current_a) from name_str.
+    - Ignores breaking capacities (e.g. 100кА, 36кА).
+    - Ignores series frame sizes (e.g. NM8N-250H).
+    - Prefers rating value closer to the poles indicator (e.g. 3P 63А -> 63).
+    """
+    if not name_str:
+        return None
+
+    # 1. Clean breaking capacity (кА / kA)
+    name_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', name_str, flags=re.IGNORECASE)
+
+    # 2. Clean product series frame sizes
+    name_clean = re.sub(r'\bNM8[N,S]-\d+[A-Z]?\b', '', name_clean, flags=re.IGNORECASE)
+    name_clean = re.sub(r'\bNVF7-\d+(?:\.\d+)?[A-Z]?\b', '', name_clean, flags=re.IGNORECASE)
+    name_clean = re.sub(r'\bNKB1-\d+\b', '', name_clean, flags=re.IGNORECASE)
+    name_clean = re.sub(r'\bNB[2,8]-\d+[A-Z]?\b', '', name_clean, flags=re.IGNORECASE)
+    name_clean = re.sub(r'\bNC[1,8]-\d+\b', '', name_clean, flags=re.IGNORECASE)
+    name_clean = re.sub(r'\bNR[8,E]-\d+\b', '', name_clean, flags=re.IGNORECASE)
+
+    # Find all poles positions (1P/2P/3P/4P)
+    poles_indices = []
+    for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', name_clean, re.IGNORECASE):
+        poles_indices.append(m.start())
+
+    # Find all amperage rating candidates
+    amp_candidates = []
+    for m in re.finditer(r'\b(\d+)\s*(?:А|A)\b', name_clean, re.IGNORECASE):
+        try:
+            val = int(m.group(1))
+            amp_candidates.append((val, m.start()))
+        except ValueError:
+            pass
+
+    if not amp_candidates:
+        return None
+
+    if len(amp_candidates) == 1 or not poles_indices:
+        return amp_candidates[0][0]
+
+    # Choose candidate closest to any poles indicator
+    best_val = amp_candidates[0][0]
+    min_dist = float('inf')
+    for val, start_idx in amp_candidates:
+        for p_idx in poles_indices:
+            dist = abs(start_idx - p_idx)
+            if dist < min_dist:
+                min_dist = dist
+                best_val = val
+
+    return best_val
 
 def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = None) -> Dict[str, float]:
     """
@@ -34,19 +90,18 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
     for r_idx, row in enumerate(rows[:35]):
         row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
 
-        art_found = any("артикул" in val or "код" in val or "article" in val for val in row_vals)
-        price_found = any("цена" in val or "тариф" in val or "price" in val or "стоимость" in val for val in row_vals)
+        art_found = any(val == "артикул" for val in row_vals)
+        price_found = any(val in ["тариф с ндс, руб", "тариф с ндс", "цена с ндс", "тариф с ндс, руб.", "цена с ндс, руб.", "цена с ндс, руб"] for val in row_vals)
 
         if art_found or price_found:
             for c_idx, val in enumerate(row_vals):
                 val_clean = val.lower().strip()
-                if any(k in val_clean for k in ["артикул", "код", "article"]):
+                if val_clean == "артикул":
                     col_article_idx = c_idx
                 elif any(k in val_clean for k in ["наименование", "описание", "name"]):
                     col_name_idx = c_idx
-                elif any(k in val_clean for k in ["тариф с ндс", "цена с ндс", "цена", "стоимость", "price", "тариф"]):
-                    if col_price_idx is None or "ндс" in val_clean or "тариф с ндс" in val_clean or "цена с ндс" in val_clean:
-                        col_price_idx = c_idx
+                elif val_clean in ["тариф с ндс, руб", "тариф с ндс", "цена с ндс", "тариф с ндс, руб.", "цена с ндс, руб.", "цена с ндс, руб"]:
+                    col_price_idx = c_idx
             break
 
     # Prevent article and price columns from overlapping!
@@ -68,6 +123,8 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         if col_price_idx is None:
             col_price_idx = 2
 
+    logger.info(f"[Price Parser] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}")
+
     for row in rows:
         if not any(row):
             continue
@@ -80,6 +137,8 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
             continue
 
         # Parse price strictly as float
+        price = 0.0
+        price_str = ""
         try:
             if price_val is not None:
                 price_str = str(price_val).strip()
@@ -88,15 +147,19 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
                 price_clean = price_clean.replace(",", ".")
                 price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
                 price = float(price_clean)
-            else:
-                continue
         except ValueError:
-            continue
+            price = 0.0
 
-        # Store clean mapping, ensuring the article code itself is never used as the price
-        if art_val and str(art_val).strip() != price_str:
+        article_str = str(art_val).strip() if art_val is not None else ""
+
+        # Check if price equals article (this is an error)
+        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str)):
+            logger.warning(f"[Price Bug] Error: Parsed price equals article code ({price_str}). Setting price to 0.0.")
+            price = 0.0
+
+        if art_val and price > 0.0:
             price_map[clean_key(art_val)] = price
-        if name_val:
+        if name_val and price > 0.0:
             price_map[clean_key(name_val)] = price
 
     return price_map
@@ -118,19 +181,19 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
 
     for r_idx, row in enumerate(rows[:35]):
         row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
-        art_found = any("артикул" in val or "код" in val or "article" in val for val in row_vals)
-        price_found = any("цена" in val or "тариф" in val or "price" in val or "стоимость" in val for val in row_vals)
+
+        art_found = any(val == "артикул" for val in row_vals)
+        price_found = any(val in ["тариф с ндс, руб", "тариф с ндс", "цена с ндс", "тариф с ндс, руб.", "цена с ндс, руб.", "цена с ндс, руб"] for val in row_vals)
 
         if art_found or price_found:
             for c_idx, val in enumerate(row_vals):
                 val_clean = val.lower().strip()
-                if any(k in val_clean for k in ["артикул", "код", "article"]):
+                if val_clean == "артикул":
                     col_article_idx = c_idx
                 elif any(k in val_clean for k in ["наименование", "описание", "name"]):
                     col_name_idx = c_idx
-                elif any(k in val_clean for k in ["тариф с ндс", "цена с ндс", "цена", "стоимость", "price", "тариф"]):
-                    if col_price_idx is None or "ндс" in val_clean or "тариф с ндс" in val_clean or "цена с ндс" in val_clean:
-                        col_price_idx = c_idx
+                elif val_clean in ["тариф с ндс, руб", "тариф с ндс", "цена с ндс", "тариф с ндс, руб.", "цена с ндс, руб.", "цена с ндс, руб"]:
+                    col_price_idx = c_idx
             break
 
     # Prevent article and price columns from overlapping!
@@ -151,6 +214,8 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         if col_price_idx is None:
             col_price_idx = 2
 
+    logger.info(f"[Price Parser Unified] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}")
+
     unified_items = []
 
     for row in rows:
@@ -164,6 +229,8 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         if not name_val:
             continue
 
+        price = 0.0
+        price_str = ""
         try:
             if price_val is not None:
                 price_str = str(price_val).strip()
@@ -172,13 +239,16 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
                 price_clean = price_clean.replace(",", ".")
                 price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
                 price = float(price_clean)
-            else:
-                continue
         except ValueError:
-            continue
+            price = 0.0
 
         name_str = str(name_val).strip()
         article_str = str(art_val).strip() if art_val is not None else ""
+
+        # Check if price equals article (this is an error)
+        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str)):
+            logger.warning(f"[Price Bug] Error: Parsed price equals article code ({price_str}). Setting price to 0.0.")
+            price = 0.0
 
         # 1. Extract poles
         poles = None
@@ -186,14 +256,8 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         if poles_match:
             poles = f"{poles_match.group(1)}P"
 
-        # 2. Extract current_a (int or None)
-        current_a = None
-        current_match = re.search(r'\b(\d+)\s*(?:А|A|а|a)\b', name_str)
-        if current_match:
-            try:
-                current_a = int(current_match.group(1))
-            except ValueError:
-                pass
+        # 2. Extract current_a using the highly intelligent amperage extractor
+        current_a = extract_current_a_from_name(name_str)
 
         # 3. Extract series
         series = None
@@ -256,19 +320,19 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
 
     for r_idx, row in enumerate(rows[:35]):
         row_vals = [str(val).strip().lower() if val is not None else "" for val in row]
-        art_found = any("артикул" in val or "код" in val or "article" in val for val in row_vals)
-        price_found = any("цена" in val or "тариф" in val or "price" in val or "стоимость" in val for val in row_vals)
+
+        art_found = any(val == "артикул" for val in row_vals)
+        price_found = any(val in ["тариф с ндс, руб", "тариф с ндс", "цена с ндс", "тариф с ндс, руб.", "цена с ндс, руб.", "цена с ндс, руб"] for val in row_vals)
 
         if art_found or price_found:
             for c_idx, val in enumerate(row_vals):
                 val_clean = val.lower().strip()
-                if any(k in val_clean for k in ["артикул", "код", "article"]):
+                if val_clean == "артикул":
                     col_article_idx = c_idx
                 elif any(k in val_clean for k in ["наименование", "описание", "name"]):
                     col_name_idx = c_idx
-                elif any(k in val_clean for k in ["тариф с ндс", "цена с ндс", "цена", "стоимость", "price", "тариф"]):
-                    if col_price_idx is None or "ндс" in val_clean or "тариф с ндс" in val_clean or "цена с ндс" in val_clean:
-                        col_price_idx = c_idx
+                elif val_clean in ["тариф с ндс, руб", "тариф с ндс", "цена с ндс", "тариф с ндс, руб.", "цена с ндс, руб.", "цена с ндс, руб"]:
+                    col_price_idx = c_idx
             break
 
     if col_article_idx == col_price_idx and col_article_idx is not None:
@@ -299,6 +363,8 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
         if not name_val:
             continue
 
+        price = 0.0
+        price_str = ""
         try:
             if price_val is not None:
                 price_str = str(price_val).strip()
@@ -306,13 +372,18 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
                 price_clean = price_clean.replace(",", ".")
                 price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
                 price = float(price_clean)
-            else:
-                continue
         except ValueError:
-            continue
+            price = 0.0
+
+        article_str = str(art_val).strip() if art_val is not None else ""
+
+        # Check if price equals article (this is an error)
+        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str)):
+            logger.warning(f"[Price Bug] Error: Parsed price equals article code ({price_str}). Setting price to 0.0.")
+            price = 0.0
 
         raw_list.append({
-            "Артикул": str(art_val).strip() if art_val is not None else "",
+            "Артикул": article_str,
             "Наименование": str(name_val).strip(),
             "Тариф с НДС, руб": price,
             "price": price
