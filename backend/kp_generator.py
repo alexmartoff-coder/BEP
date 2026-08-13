@@ -73,9 +73,10 @@ def word_overlap_match(name: str, price_map: Dict[str, float]) -> tuple[float, b
 def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, float], index_map: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Combines parsed board positions with pricing.
-    - For items having both poles and current_a (Vision items), strictly checks the structured index_map
-      under key poles_current (e.g., "3P_125"). If found, enriches with correct order article and price.
-    - If not found or if fallback text-parsed items, uses normal exact, substring, or name matches.
+    - Strictly matches against active index `{poles}_{current_a}`.
+    - If found: assigns correct article + price.
+    - If not found: price = 0.0, article = "", name = "Авт. выкл. {poles} {current_a}А".
+    - Ensures no schematic annotations like QF* are used as articles.
     """
     grand_total = 0.0
     kp_boards = []
@@ -86,50 +87,38 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
         board_subtotal = 0.0
 
         for item in board["items"]:
-            article = item.get("article", "")
-            name = item.get("name", "")
             qty = item.get("qty", 1)
             unit = item.get("unit", "шт")
-            poles = item.get("poles", "")
-            current_a = item.get("current_a", "")
+            poles = str(item.get("poles") or "").upper().strip()
+            current_a = str(item.get("current_a") or "").strip()
 
-            # Skip empty entries
-            if not article and not name:
-                continue
-
-            # Filter trash items before pricing or final KP formatting
-            from backend.pdf_parser import is_trash_item
-            if is_trash_item(name, str(item.get("nominal") or "")):
-                continue
+            # Clean numerical current value
+            current_digits_match = re.search(r'\d+', current_a)
+            current_val = current_digits_match.group(0) if current_digits_match else ""
 
             price = 0.0
             price_found = False
+            article = ""
+            name = f"Авт. выкл. {poles} {current_val}А" if (poles and current_val) else str(item.get("name") or "")
 
-            # 1. Exclusive active index lookup for Vision/fallback items (poles and current_a)
-            if poles and current_a:
-                poles_norm = poles.upper().strip()
-                current_digits_match = re.search(r'\d+', current_a)
-                current_val = current_digits_match.group(0) if current_digits_match else ""
-
-                key = f"{poles_norm}_{current_val}"
+            if poles and current_val:
+                key = f"{poles}_{current_val}"
                 if index_map and key in index_map and index_map[key]:
                     matched_pos = index_map[key][0]
-                    price = matched_pos.get("price", 0.0)
-                    article = matched_pos.get("article") or ""
-                    # Also use unified name from the index if available
-                    name = matched_pos.get("name") or name
+                    price = float(matched_pos.get("price") or 0.0)
+                    art_candidate = str(matched_pos.get("article") or "").strip()
+                    # Ensure no schematic label like QF* leaks into article
+                    if re.match(r'(?i)^QF\d+$', art_candidate):
+                        article = ""
+                    else:
+                        article = art_candidate
+                    name = str(matched_pos.get("name") or matched_pos.get("Наименование") or name)
                     price_found = True
-                    logger.info(f"[Pricing Index] Strict match found for key '{key}' -> article: '{article}', price: {price}")
+                    logger.info(f"[Match] key={key} article={article} price={price}")
                 else:
-                    price = 0.0
-                    price_found = False
-                    logger.info(f"[Pricing Index] Match not found for key '{key}' -> price is 0.0")
-
-            # 2. If it does not have poles or current_a, set price strictly to 0
+                    logger.info(f"[Match] key={poles}_{current_val} article= price=0")
             else:
-                price = 0.0
-                price_found = False
-                logger.info(f"[Pricing Index] Item lacks poles or current_a -> price is strictly 0.0")
+                logger.info(f"[Match] missing-poles-or-amperage price=0")
 
             # Compute total cost
             total_sum = price * qty

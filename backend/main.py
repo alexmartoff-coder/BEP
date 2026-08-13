@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import os
 import io
 import json
+import logging
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 from backend.pdf_parser import extract_text_from_pdf, parse_pdf_combined_to_bom
@@ -540,7 +542,76 @@ async def generate_kp(
         # 1. Parse PDF specification text and OpenRouter Vision combined
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes)
-        boards = await parse_pdf_combined_to_bom(pdf_bytes, custom_prompt=custom_prompt)
+
+        # Parse Vision first or text fallback
+        # Let's perform custom invocation to obtain precise logging
+        import tempfile
+        tmp_path = None
+        vision_items = []
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(pdf_bytes)
+                tmp_path = tmp.name
+            from backend.vision_parser import parse_equipment_from_pdf
+            vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt)
+        except Exception as e:
+            logging.getLogger("main").error(f"[Vision Error] {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+        if vision_items:
+            logging.getLogger("main").info(f"[Vision] items={len(vision_items)}")
+            source_items = vision_items
+        else:
+            logging.getLogger("main").info("[Vision] items=empty")
+            from backend.pdf_parser import text_fallback_scheme_parser
+            source_items = text_fallback_scheme_parser(extracted_text)
+            logging.getLogger("main").info(f"[Fallback] items={len(source_items)}")
+
+        # Apply strict trash filter and normalization
+        from backend.pdf_parser import is_trash_item
+        valid_items = []
+        for item in source_items:
+            item_name = str(item.get("name") or item.get("mark") or "")
+            nominal_str = str(item.get("nominal") or "")
+            if not item_name and item.get("poles") and item.get("current_a"):
+                item_name = f"Авт. выкл. {item.get('poles')} {item.get('current_a')}А"
+            if is_trash_item(item_name, nominal_str):
+                continue
+            current_val = str(item.get("current_a") or "")
+            if not current_val:
+                current_digits_match = re.search(r'\d+', nominal_str)
+                current_val = current_digits_match.group(0) if current_digits_match else ""
+            poles_val = str(item.get("poles") or "3P")
+            valid_items.append({
+                "article": str(item.get("mark") or ""),
+                "name": f"Авт. выкл. {poles_val} {current_val}А" if current_val else item_name,
+                "qty": int(item.get("qty") or 1),
+                "unit": "шт",
+                "poles": poles_val,
+                "current_a": current_val
+            })
+
+        # Group identical items (by poles and current_a)
+        grouped_map = {}
+        for vit in valid_items:
+            p_val = str(vit.get("poles") or "").upper().strip()
+            c_val = str(vit.get("current_a") or "")
+            q_val = int(vit.get("qty") or 1)
+            g_key = (p_val, c_val) if (p_val and c_val) else ("RAW", str(vit.get("name") or vit.get("article") or ""))
+            if g_key in grouped_map:
+                grouped_map[g_key]["qty"] += q_val
+            else:
+                grouped_map[g_key] = vit
+
+        boards = [{
+            "board_name": "Распознано Vision API",
+            "items": list(grouped_map.values())
+        }]
 
         # 2. Parse, merge and index uploaded price lists
         price_map = {}
@@ -591,7 +662,6 @@ async def generate_kp(
                 pass
 
         # Match Vision items using MATCHER if MATCHER is initialized to resolve exact series, nominal, and prices
-        import logging
         main_logger = logging.getLogger("generate_kp")
         if MATCHER and boards:
             main_logger.info("[Vision] MATCHER is initialized. Performing dynamic self-learning matching on board items...")
@@ -619,6 +689,11 @@ async def generate_kp(
         # 3. Generate the preliminary commercial proposal
         kp_data = generate_preliminary_kp(boards, price_map, index_map)
 
+        # Log final commercial proposal summary according to requirements
+        total_items = sum(len(board.get("items", [])) for board in kp_data.get("boards", []))
+        grand_total = kp_data.get("grand_total", 0.0)
+        logging.getLogger("main").info(f"[KP] total_items={total_items} grand_total={grand_total}")
+
         return JSONResponse(content={
             "status": "success",
             "specification_file": specification.filename,
@@ -628,7 +703,6 @@ async def generate_kp(
         })
     except Exception as e:
         logger_name = "main"
-        import logging
         logging.getLogger(logger_name).error(f"Failed to generate KP: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate KP: {str(e)}")
 

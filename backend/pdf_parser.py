@@ -93,38 +93,98 @@ def is_trash_item(item_name: str, nominal: str = "") -> bool:
 def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     """
     Custom text-fallback parser for electrical diagrams.
-    Finds poles (1P/3P/4P) and amperage ratings (e.g. 16A, 63А, 125A, 630A, 504A)
-    occurring in the text, groups identical rating+poles into items,
-    and returns a structured list.
+    Scans the entire text for all individual occurrences of amperage ratings and poles,
+    pairing them intelligently (by proximity or positionally if in parallel lists),
+    and groups identical items. Ignores 504A if 630A is present.
     """
     if not text:
         return []
 
     lines = text.split("\n")
-    grouped = {}
 
-    from backend.price_parser import extract_current_a_from_name
-    for line in lines:
+    # Check if 630A is present anywhere in the text to avoid counting 504A separately
+    has_630 = any(re.search(r'\b630\s*(?:А|A)\b', line, re.IGNORECASE) for line in lines)
+
+    nominals = []
+    poles = []
+
+    for line_idx, line in enumerate(lines):
+        # We don't filter out whole lines if we need sequences across lines,
+        # but let's clean known annotations/trash items
         line_clean = line.strip()
         if not line_clean:
             continue
 
-        # Apply strict trash filter right during text fallback extraction
-        if is_trash_item(line_clean):
-            continue
+        # Clean line from kA/кА/мм/etc. to avoid confusing rating extraction
+        line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
+        line_clean = re.sub(r'\b\d+\s*мм\b', '', line_clean, flags=re.IGNORECASE)
+        line_clean = re.sub(r'\bNM8[N,S]-\d+[A-Z]?\b', '', line_clean, flags=re.IGNORECASE)
+        line_clean = re.sub(r'\bNB[2,8]-\d+[A-Z]?\b', '', line_clean, flags=re.IGNORECASE)
 
-        # Extract poles: 1P, 2P, 3P, 4P
-        poles_match = re.search(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE)
-        poles_val = f"{poles_match.group(1)}P" if poles_match else "3P"
+        # Find all nominal current ratings (excluding 504 if 630 is present)
+        for m in re.finditer(r'\b(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE):
+            val = int(m.group(1))
+            if val == 504 and has_630:
+                continue
+            nominals.append({
+                "val": val,
+                "line": line_idx,
+                "start": m.start(),
+                "end": m.end(),
+                "paired": False
+            })
 
-        # Extract amperage using the highly intelligent amperage extractor
-        extracted_amp = extract_current_a_from_name(line_clean)
-        if extracted_amp is None:
-            continue
+        # Find all poles
+        for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE):
+            p_val = f"{m.group(1)}P"
+            poles.append({
+                "val": p_val,
+                "line": line_idx,
+                "start": m.start(),
+                "end": m.end(),
+                "paired": False
+            })
 
-        current_val = str(extracted_amp)
+    # Sort nominals and poles by document order
+    nominals.sort(key=lambda x: (x["line"], x["start"]))
+    poles.sort(key=lambda x: (x["line"], x["start"]))
 
-        key = (poles_val, current_val)
+    # Pass 1: Same-line closest pairing
+    for nom in nominals:
+        same_line_poles = [p for p in poles if p["line"] == nom["line"] and not p["paired"]]
+        if same_line_poles:
+            same_line_poles.sort(key=lambda p: abs(p["start"] - nom["start"]))
+            best_pole = same_line_poles[0]
+            nom["paired"] = True
+            best_pole["paired"] = True
+            nom["poles_val"] = best_pole["val"]
+
+    # Pass 2: Positional alignment of remaining unpaired parallel sequences
+    unpaired_noms = [nom for nom in nominals if not nom["paired"]]
+    unpaired_pols = [p for p in poles if not p["paired"]]
+
+    for i in range(min(len(unpaired_noms), len(unpaired_pols))):
+        nom = unpaired_noms[i]
+        pol = unpaired_pols[i]
+        nom["paired"] = True
+        pol["paired"] = True
+        nom["poles_val"] = pol["val"]
+
+    # Heuristics for remaining unpaired nominals (e.g. input breakers or extra ratings)
+    for nom in nominals:
+        if "poles_val" not in nom:
+            val = nom["val"]
+            if val >= 100:
+                nom["poles_val"] = "3P"
+            else:
+                nom["poles_val"] = "1P" if val <= 40 else "3P"
+
+    # Group items by (poles, current_a)
+    grouped = {}
+    for nom in nominals:
+        p_val = nom["poles_val"]
+        c_val = str(nom["val"])
+        key = (p_val, c_val)
         grouped[key] = grouped.get(key, 0) + 1
 
     items = []
