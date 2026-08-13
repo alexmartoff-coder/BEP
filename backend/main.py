@@ -564,7 +564,10 @@ async def generate_kp(
                 "qty": int(item.get("qty") or 1),
                 "unit": "шт",
                 "poles": poles_val,
-                "current_a": current_val
+                "current_a": current_val,
+                "series": item.get("series"),
+                "nominal": item.get("nominal") or f"{current_val}A",
+                "type": item.get("type")
             })
 
         # Group identical items (by poles and current_a)

@@ -78,41 +78,80 @@ class SmartMatcher:
         return None
 
     def match(self, detected: Dict) -> Tuple[Optional[Dict], float]:
-        """Сопоставляет с прайсом с автоопределением серии"""
+        """Сопоставляет с прайсом с автоопределением серии и сверх-устойчивым поиском"""
 
-        series = str(detected.get('series') or '')
-        nominal = str(detected.get('nominal') or '')
-        poles = str(detected.get('poles') or '')
+        series = str(detected.get('series') or detected.get('name') or '')
+        nominal = str(detected.get('nominal') or detected.get('current_a') or '')
+        poles = str(detected.get('poles') or '').upper().strip()
 
         # Извлекаем номинал
         amp = self._extract_amperage(nominal)
         if not amp:
+            current_a_val = detected.get('current_a')
+            if current_a_val:
+                try:
+                    amp = int(re.search(r'\d+', str(current_a_val)).group(0))
+                except Exception:
+                    pass
+        if not amp:
             return None, 0.0
 
-        # Если серия не определена - определяем по правилам
-        if not series:
-            series = self._infer_series(poles, amp)
-            if not series:
-                return None, 0.0
+        # Нормализуем poles
+        poles_norm = poles
+        if poles_norm:
+            poles_norm = poles_norm.replace('П', 'P').replace('ПОЛЮС', 'P').replace(' ', '')
 
-        # Ищем в прайсе
+        # Извлекаем базовую серию
+        base_series = None
+        for item_series in [series] + [self._extract_series(series) or ""]:
+            if not item_series:
+                continue
+            m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8)\b', item_series, re.IGNORECASE)
+            if m:
+                base_series = m.group(1).upper()
+                break
+
+        if not base_series:
+            inferred = self._infer_series(poles_norm, amp)
+            if inferred:
+                m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8)\b', inferred, re.IGNORECASE)
+                if m:
+                    base_series = m.group(1).upper()
+
+        candidates = []
         for item in self.price_list:
             item_name = item.get('Наименование', '')
-            # Проверяем серию (очищаем от модификаторов)
-            clean_series = series.replace(' EN', '').replace(' TM', '').replace(' EM', '')
-            if clean_series in item_name:
-                item_amp = self._extract_amperage(item_name)
-                if item_amp == amp:
-                    return item, 1.0
 
-        # Если не нашли - пробуем по базовой серии
-        base_series = series.split('-')[0] if '-' in series else series
-        for item in self.price_list:
-            item_name = item.get('Наименование', '')
-            if base_series in item_name:
-                item_amp = self._extract_amperage(item_name)
-                if item_amp == amp:
-                    return item, 0.8
+            # 1. Извлекаем номинал позиции прайса
+            item_amp = self._extract_amperage(item_name)
+            if item_amp != amp:
+                continue
+
+            # 2. Извлекаем poles из названия в прайсе
+            item_poles = None
+            p_match = re.search(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', item_name, re.IGNORECASE)
+            if p_match:
+                item_poles = f"{p_match.group(1)}P"
+
+            if poles_norm and item_poles and poles_norm != item_poles:
+                continue
+
+            score = 0.5
+            if base_series:
+                if base_series.lower() in item_name.lower():
+                    score += 0.4
+                    # Дополнительный бонус за точное совпадение полной серии
+                    full_series = series.split(' ')[0] if series else ""
+                    if len(full_series) > 4 and full_series.lower() in item_name.lower():
+                        score += 0.1
+
+            candidates.append((item, score))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            best_item, best_score = candidates[0]
+            if best_score >= 0.6:
+                return best_item, best_score
 
         return None, 0.0
 
