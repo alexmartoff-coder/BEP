@@ -24,30 +24,29 @@ MATCHER = None
 PROMPT_GENERATOR = None
 ANALYSIS = None
 
+def hydrate_matcher(file_bytes: bytes):
+    global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
+    from backend.price_parser import parse_price_list_raw
+    raw_list = parse_price_list_raw(file_bytes)
+    PRICE_LIST = []
+    for item in raw_list:
+        PRICE_LIST.append({
+            "Артикул": item.get("Артикул", ""),
+            "Наименование": item.get("Наименование", ""),
+            "Тариф с НДС, руб": item.get("Тариф с НДС, руб") or item.get("price") or 0.0
+        })
+    MATCHER = SmartMatcher(PRICE_LIST)
+    analyzer = PriceAnalyzer(PRICE_LIST)
+    ANALYSIS = analyzer.analyze()
+    PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+
 # Hydrate on startup if active pricelist exists
 try:
     active_path = "data/pricelists/active_pricelist.xlsx"
     if os.path.exists(active_path):
         with open(active_path, "rb") as f:
             file_bytes = f.read()
-        from backend.price_parser import parse_price_list_raw
-        from smart_matcher import SmartMatcher
-        from price_analyzer import PriceAnalyzer
-        from prompt_generator import PromptGenerator
-
-        raw_list = parse_price_list_raw(file_bytes)
-        PRICE_LIST = []
-        for item in raw_list:
-            PRICE_LIST.append({
-                "Артикул": item["Артикул"],
-                "Наименование": item["Наименование"],
-                "Тариф с НДС, руб": item["Тариф с НДС, руб"]
-            })
-        MATCHER = SmartMatcher(PRICE_LIST)
-
-        analyzer = PriceAnalyzer(PRICE_LIST)
-        ANALYSIS = analyzer.analyze()
-        PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+        hydrate_matcher(file_bytes)
 except Exception:
     pass
 
@@ -196,21 +195,7 @@ async def upload_pricelist_file(file: UploadFile = File(...), activate: bool = B
             with open(index_path, "w", encoding="utf-8") as index_file:
                 json.dump(file_index, index_file, ensure_ascii=False, indent=2)
 
-            global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
-            PRICE_LIST = []
-            from backend.price_parser import parse_price_list_raw
-            raw_list = parse_price_list_raw(file_bytes)
-            for item in raw_list:
-                PRICE_LIST.append({
-                    "Артикул": item["Артикул"],
-                    "Наименование": item["Наименование"],
-                    "Тариф с НДС, руб": item["Тариф с НДС, руб"]
-                })
-            MATCHER = SmartMatcher(PRICE_LIST)
-
-            analyzer = PriceAnalyzer(PRICE_LIST)
-            ANALYSIS = analyzer.analyze()
-            PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+            hydrate_matcher(file_bytes)
 
         files.append(new_file_meta)
         save_pricelists_registry(files)
@@ -299,21 +284,7 @@ async def activate_pricelist_file(filename: str):
         with open(index_path, "w", encoding="utf-8") as index_file:
             json.dump(file_index, index_file, ensure_ascii=False, indent=2)
 
-        global MATCHER, PRICE_LIST, PROMPT_GENERATOR, ANALYSIS
-        PRICE_LIST = []
-        from backend.price_parser import parse_price_list_raw
-        raw_list = parse_price_list_raw(file_bytes)
-        for item in raw_list:
-            PRICE_LIST.append({
-                "Артикул": item["Артикул"],
-                "Наименование": item["Наименование"],
-                "Тариф с НДС, руб": item["Тариф с НДС, руб"]
-            })
-        MATCHER = SmartMatcher(PRICE_LIST)
-
-        analyzer = PriceAnalyzer(PRICE_LIST)
-        ANALYSIS = analyzer.analyze()
-        PROMPT_GENERATOR = PromptGenerator(ANALYSIS)
+        hydrate_matcher(file_bytes)
 
         save_pricelists_registry(files)
         return {"status": "success", "message": f"File {safe_filename} activated successfully."}
@@ -641,6 +612,9 @@ async def generate_kp(
                     with open("data/pricelists/metadata.json", "w", encoding="utf-8") as mf:
                         json.dump(metadata, mf, ensure_ascii=False, indent=2)
 
+                    # Also hydrate the MATCHER dynamically inside this instance!
+                    hydrate_matcher(price_bytes)
+
             # Save the compiled active index on disk
             index_path = "data/pricelists/active_index.json"
             with open(index_path, "w", encoding="utf-8") as index_file:
@@ -657,6 +631,11 @@ async def generate_kp(
                 # Load existing persistent index map
                 with open(index_path, "r", encoding="utf-8") as index_file:
                     index_map = json.load(index_file)
+
+                # Hydrate MATCHER on-demand if not already initialized
+                global MATCHER
+                if MATCHER is None:
+                    hydrate_matcher(price_bytes)
             else:
                 # Do not raise error if we can still try to generate using fallback pricing or MATCHER
                 pass
