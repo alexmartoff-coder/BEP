@@ -53,14 +53,14 @@ def compute_pdf_md5(pdf_path: str) -> str:
 
 def pil_image_to_base64(img) -> str:
     """
-    Applies upscaling (3x) with LANCZOS, enhances sharpness (2.0),
+    Applies upscaling (2x) with LANCZOS, enhances sharpness (2.0),
     saves to a temp file, reads it, and encodes to base64 PNG string.
     """
     try:
         # Get original dimensions
         width, height = img.size
-        new_width = width * 3
-        new_height = height * 3
+        new_width = width * 2
+        new_height = height * 2
 
         # Use Image.Resampling.LANCZOS or Image.LANCZOS based on Pillow version
         try:
@@ -68,7 +68,7 @@ def pil_image_to_base64(img) -> str:
         except AttributeError:
             resample_filter = Image.LANCZOS
 
-        # Resize/Upscale 3x
+        # Resize/Upscale 2x
         resized_img = img.resize((new_width, new_height), resample_filter)
 
         # Enhance sharpness (coefficient ~2.0)
@@ -134,17 +134,15 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
         )
 
         # Convert PDF to PIL images in an executor to avoid blocking the event loop
-        logger.info(f"[Vision] [Vision] Converting PDF {pdf_path} to images...")
-        images = await asyncio.to_thread(convert_from_path, pdf_path, dpi=150)
+        # We only convert the first 4 pages at a lower but clear DPI (90) to save processing time
+        logger.info(f"[Vision] Converting PDF {pdf_path} to images (first 4 pages, 90 DPI)...")
+        images = await asyncio.to_thread(convert_from_path, pdf_path, dpi=90, first_page=1, last_page=4)
 
         if not images:
             logger.warning(f"[Vision] No pages extracted from PDF: {pdf_path}")
             return []
 
-        # Limit pages to avoid huge payloads (e.g. max first 10 pages)
-        images_to_send = images[:10]
-        if len(images) > 10:
-            logger.info(f"[Vision] PDF has {len(images)} pages. Limiting Vision API processing to first 10 pages.")
+        images_to_send = images
 
         # Prepare strict prompt as requested by the user
         if custom_prompt:
