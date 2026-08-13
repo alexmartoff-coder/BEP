@@ -101,7 +101,19 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
             article = ""
             name = f"Авт. выкл. {poles} {current_val}А" if (poles and current_val) else str(item.get("name") or "")
 
-            if poles and current_val:
+            # Check if item has been already matched (e.g., by MATCHER in main.py)
+            if item.get("price_found"):
+                price = float(item.get("price") or 0.0)
+                price_found = True
+                art_candidate = str(item.get("article") or "").strip()
+                if re.match(r'(?i)^QF\d+$', art_candidate):
+                    article = ""
+                else:
+                    article = art_candidate
+                name = str(item.get("name") or name)
+                logger.info(f"[Match] pre-matched-fallback article={article} price={price}")
+
+            elif poles and current_val:
                 key = f"{poles}_{current_val}"
                 if index_map and key in index_map and index_map[key]:
                     matched_pos = index_map[key][0]
