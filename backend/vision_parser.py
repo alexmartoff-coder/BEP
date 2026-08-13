@@ -53,14 +53,14 @@ def compute_pdf_md5(pdf_path: str) -> str:
 
 def pil_image_to_base64(img) -> str:
     """
-    Applies upscaling (2x) with LANCZOS, enhances sharpness (2.0),
+    Applies upscaling (3x) with LANCZOS, enhances sharpness (2.0),
     saves to a temp file, reads it, and encodes to base64 PNG string.
     """
     try:
         # Get original dimensions
         width, height = img.size
-        new_width = width * 2
-        new_height = height * 2
+        new_width = width * 3
+        new_height = height * 3
 
         # Use Image.Resampling.LANCZOS or Image.LANCZOS based on Pillow version
         try:
@@ -68,7 +68,7 @@ def pil_image_to_base64(img) -> str:
         except AttributeError:
             resample_filter = Image.LANCZOS
 
-        # Resize/Upscale 2x
+        # Resize/Upscale 3x
         resized_img = img.resize((new_width, new_height), resample_filter)
 
         # Enhance sharpness (coefficient ~2.0)
@@ -134,9 +134,9 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
         )
 
         # Convert PDF to PIL images in an executor to avoid blocking the event loop
-        # We only convert the first 4 pages at a lower but clear DPI (90) to save processing time
-        logger.info(f"[Vision] Converting PDF {pdf_path} to images (first 4 pages, 90 DPI)...")
-        images = await asyncio.to_thread(convert_from_path, pdf_path, dpi=90, first_page=1, last_page=4)
+        # We only convert the first 2 pages at a high/clear DPI (150) to make sure OCR reads tiny text perfectly
+        logger.info(f"[Vision] Converting PDF {pdf_path} to images (first 2 pages, 150 DPI)...")
+        images = await asyncio.to_thread(convert_from_path, pdf_path, dpi=150, first_page=1, last_page=2)
 
         if not images:
             logger.warning(f"[Vision] No pages extracted from PDF: {pdf_path}")
@@ -149,15 +149,28 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
             prompt = custom_prompt
             logger.info(f"[Vision] Using custom prompt: {custom_prompt[:150]}...")
         else:
-            prompt = """Ты инженер по щитовому оборудованию. На схеме найди ВСЕ автоматические выключатели.
-Для каждого укажи:
-- mark (QF1, QF2… если есть)
-- nominal (125A, 63A, 16A, 630A…)
-- poles (1P или 3P)
-Группируй одинаковые (одинаковый nominal+poles) — можно вернуть по одному с полем qty.
-Игнорируй: адреса, штампы, кабели, «Сортер», «Резерв», примечания.
-Ответ ТОЛЬКО JSON-массив:
-[{"mark":"QF1","nominal":"125A","poles":"3P","qty":6}]"""
+            prompt = """Ты инженер-сметчик по электрощитовому оборудованию CHINT.
+На схеме найди и распознай ВСЕ электрические аппараты и силовые устройства.
+Распознай следующие типы приборов:
+1. Автоматические выключатели (обозначение QF) — тип "автомат"
+2. Рубильники / Выключатели нагрузки (обозначение QS) — тип "рубильник"
+3. УЗО (Выключатели дифференциального тока, обозначение QD) — тип "УЗО"
+4. Дифференциальные автоматы (АВДТ, обозначение QF/QFD) — тип "дифавтомат"
+5. Контакторы (обозначение KM) — тип "контактор"
+6. Преобразователи частоты (частотники, обозначение U) — тип "преобразователь"
+
+Для каждого найденного прибора заполни поля:
+- mark: позиционное обозначение на схеме (QF1, QS3, KM2 и т.д.)
+- series: серия прибора CHINT (например: NM8N, NB2, NH4, NL1, NB1L, NC8, NVF7), если видна или может быть определена
+- nominal: номинальный ток или мощность (например: 125A, 63А, 16А, 7.5кВт)
+- poles: количество полюсов (например: 1P, 2P, 3P, 4P)
+- type: один из типов на русском языке ("автомат", "рубильник", "УЗО", "дифавтомат", "контактор", "преобразователь")
+- qty: количество приборов этой группы
+
+Группируй абсолютно идентичные приборы (с одинаковыми nominal, poles и type) — складывай их количество в поле qty.
+Игнорируй: кабели, шины, надписи "Сортер", "Резерв", размеры в мм, кадастровые адреса, штампы листов.
+Ответ верни СТРОГО как один валидный JSON-массив приборов, без лишнего текста вокруг:
+[{"mark":"QF1","series":"NM8N","nominal":"125A","poles":"3P","type":"автомат","qty":2}]"""
             logger.info("[Vision] Using default fallback prompt.")
 
         # Format payload in OpenAI Vision API format

@@ -51,8 +51,9 @@ def test_smart_matcher_match():
         "type": "контактор"
     }
     matched_item_2, score_2 = matcher.match(detected_item_2)
-    assert matched_item_2 is None
-    assert score_2 == 0.0
+    assert matched_item_2 is not None
+    assert matched_item_2["Артикул"] == "ART-102"
+    assert score_2 >= 0.8
 
 def test_smart_matcher_series_nominal_poles_matching():
     """Test precise series + nominal + poles matching required for the final stage."""
