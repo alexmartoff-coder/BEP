@@ -48,16 +48,31 @@ def test_parse_price_list_raw_overlapping_bug():
 def test_detect_columns_multi_vat_prioritization():
     from backend.price_parser import detect_columns
 
-    # Multi-column table with both 'Цена без НДС' and 'Цена с НДС'
+    # Multi-column table with both 'Тариф без НДС, руб' and 'Тариф с НДС, руб'
     rows = [
-        ("Артикул", "Наименование", "Цена без НДС, руб.", "Цена с НДС, руб."),
-        ("ART-01", "Авт. выкл. NXB-63 1P 16A", "100.00", "120.00"),
-        ("ART-02", "Авт. выкл. NXB-63 1P 32A", "150.00", "180.00")
+        ("Код", "Наименование номенклатуры", "Тариф с НДС, руб", "Тариф без НДС, руб", "Ед. изм."),
+        ("268974", "Авт. выкл. NM8N-400H TM 3P 400A 100kA", "58670.85", "48090.86", "шт"),
+        ("268975", "Авт. выкл. NM8N-400H TM 3P 315A 100kA", "55000.00", "45000.00", "шт")
     ]
     art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows)
     assert art_idx == 0
     assert name_idx == 1
-    assert price_idx == 3  # Must pick column index 3 ('Цена с НДС') over column index 2 ('Цена без НДС')
+    assert price_idx == 2  # Must pick column index 2 ('Тариф с НДС, руб') over column index 3 ('Тариф без НДС, руб')
+    assert is_kopecks is False
+
+def test_detect_columns_single_tariff_without_vat():
+    from backend.price_parser import detect_columns
+
+    # Single price column table where header is 'Тариф без НДС, руб' (and numeric cols like weight exist)
+    rows = [
+        ("Артикул", "Наименование", "Тариф без НДС, руб", "Масса, кг", "Объем, куб.м"),
+        ("268974", "Авт. выкл. NM8N-400H TM 3P 400A", "48090.86", "5.735", "0.011"),
+        ("268975", "Авт. выкл. NM8N-400H TM 3P 315A", "45000.00", "5.240", "0.011")
+    ]
+    art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows)
+    assert art_idx == 0
+    assert name_idx == 1
+    assert price_idx == 2  # Must pick 'Тариф без НДС, руб' as the price column
     assert is_kopecks is False
 
 def test_detect_columns_robustness():

@@ -172,17 +172,17 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
             if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
                 name_scores[c_idx] += 80
 
-        # Price matches - strongly prioritize 'с НДС' over 'без НДС'
+        # Price matches - strongly prioritize 'с НДС' over 'без НДС', but give 'Тариф' / 'Тариф без НДС' >= 180 points
         has_price_kw = any(kw in col_text for kw in ['цена', 'тариф', 'стоимость', 'price', 'cost', 'rate'])
         has_with_vat = any(kw in col_text for kw in ['с ндс', 'с учетом ндс', 'тариф с ндс', 'цена с ндс', 'вкл ндс', 'сндс'])
-        has_without_vat = 'без ндс' in col_text or 'безндс' in col_text
+        has_without_vat = 'без ндс' in col_text or 'безндс' in col_text or 'б/ндс' in col_text
 
         if has_with_vat:
             price_scores[c_idx] += 250
         elif has_price_kw and not has_without_vat:
-            price_scores[c_idx] += 150
+            price_scores[c_idx] += 200
         elif has_price_kw and has_without_vat:
-            price_scores[c_idx] += 60  # Lesser score for 'без НДС' column if 'с НДС' exists
+            price_scores[c_idx] += 180  # Strong score so 'Тариф без НДС' beats raw numeric content rows
         elif 'ндс' in col_text or 'руб' in col_text:
             price_scores[c_idx] += 80
 
