@@ -54,10 +54,11 @@ def test_detect_columns_robustness():
         ("12345", "Автоматический выключатель CHINT NB2 3P 16A", "150.00"),
         ("67890", "Автоматический выключатель CHINT NB2 3P 32A", "250.00")
     ]
-    art_idx, name_idx, price_idx = detect_columns(rows_1)
+    art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows_1)
     assert art_idx == 0
     assert name_idx == 1
     assert price_idx == 2
+    assert is_kopecks is False
 
     # Custom Excel table #2: Scrambled columns & English headers
     rows_2 = [
@@ -65,10 +66,11 @@ def test_detect_columns_robustness():
         ("150.00", "12345", "Автоматический выключатель CHINT NB2 3P 16A"),
         ("250.00", "67890", "Автоматический выключатель CHINT NB2 3P 32A")
     ]
-    art_idx, name_idx, price_idx = detect_columns(rows_2)
+    art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows_2)
     assert art_idx == 1
     assert name_idx == 2
     assert price_idx == 0
+    assert is_kopecks is False
 
     # Custom Excel table #3: Missing headers completely (uses numeric fallback & content analysis)
     # The first row is raw values, not headers.
@@ -76,10 +78,47 @@ def test_detect_columns_robustness():
         ("99999", "Автоматический выключатель CHINT DZ158 3P 100A", "1200.50"),
         ("88888", "Автоматический выключатель CHINT DZ158 3P 125A", "1500.00")
     ]
-    art_idx, name_idx, price_idx = detect_columns(rows_3)
+    art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows_3)
     assert art_idx == 0
     assert name_idx == 1
     assert price_idx == 2
+    assert is_kopecks is False
+
+def test_parse_robust_float():
+    from backend.price_parser import parse_robust_float
+    assert parse_robust_float("1.500,50") == 1500.5
+    assert parse_robust_float("150,50 руб.") == 150.5
+    assert parse_robust_float("1500.00") == 1500.0
+    assert parse_robust_float("1 500") == 1500.0
+    assert parse_robust_float(None) == 0.0
+    assert parse_robust_float("") == 0.0
+
+def test_kopecks_auto_division():
+    from backend.price_parser import detect_columns, parse_price_list_raw
+    import openpyxl
+    import io
+
+    # Create mock excel with prices in kopecks (e.g. 15050 kopecks represents 150.50 rubles)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Артикул", "Наименование номенклатуры", "Цена, в копейках"])
+    ws.append(["11111", "Автоматический выключатель 3P 16A", "15050"])
+    ws.append(["22222", "Автоматический выключатель 1P 10A", "7500"])
+
+    out = io.BytesIO()
+    wb.save(out)
+
+    # 1. Test column detection says is_kopecks is True
+    rows = list(openpyxl.load_workbook(out, data_only=True).active.iter_rows(values_only=True))
+    art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows)
+    assert is_kopecks is True
+
+    # 2. Test raw parse auto-divides prices by 100.0
+    out.seek(0)
+    raw_list = parse_price_list_raw(out.getvalue())
+    content_rows = [r for r in raw_list if r["Артикул"] != "Артикул"]
+    assert content_rows[0]["price"] == 150.50
+    assert content_rows[1]["price"] == 75.00
 
 
 def test_text_fallback_scheme_parser_parallel_sequences():

@@ -14,6 +14,58 @@ def clean_key(val: Any) -> str:
     s = str(val).strip().upper()
     return re.sub(r'[^A-Z0-9А-Я]', '', s)
 
+def parse_robust_float(val: Any) -> float:
+    """
+    Intelligently and robustly parses pricing strings into floats, handling
+    varying formats of thousands and decimal separators (Russian/English/German).
+    """
+    if val is None:
+        return 0.0
+    s = str(val).strip()
+    if not s:
+        return 0.0
+    # Strip spaces and currency symbols
+    s = re.sub(r'[\s\xa0\u200b\u202f\tруб\$€₽]+', '', s, flags=re.IGNORECASE)
+    # Strip trailing dot from abbreviations like 'руб.'
+    s = s.rstrip('.')
+    if not s:
+        return 0.0
+    if '.' in s and ',' in s:
+        dot_idx = s.find('.')
+        comma_idx = s.find(',')
+        if dot_idx < comma_idx:
+            # e.g. 1.500,50 -> dot is thousands, comma is decimal
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            # e.g. 1,500.50 -> comma is thousands, dot is decimal
+            s = s.replace(',', '')
+    elif ',' in s:
+        # In Russian spreadsheets, comma is almost always decimal separator
+        s = s.replace(',', '.')
+    elif '.' in s:
+        if s.count('.') > 1:
+            # Multiple dots are thousands separators, e.g. 1.500.000 -> 1500000
+            s = s.replace('.', '')
+        else:
+            parts = s.split('.')
+            if len(parts[1]) == 3 and len(parts[0]) <= 3:
+                # Likely thousands separator, e.g., 1.500 -> 1500
+                s = s.replace('.', '')
+    s_clean = ''
+    has_dot = False
+    for c in s:
+        if c.isdigit():
+            s_clean += c
+        elif c == '-' and not s_clean:
+            s_clean += c
+        elif c == '.' and not has_dot:
+            s_clean += c
+            has_dot = True
+    try:
+        return float(s_clean) if s_clean else 0.0
+    except ValueError:
+        return 0.0
+
 def extract_current_a_from_name(name_str: str) -> Optional[int]:
     """
     Intelligently extracts the nominal current rating (current_a) from name_str.
@@ -67,20 +119,21 @@ def extract_current_a_from_name(name_str: str) -> Optional[int]:
 
     return best_val
 
-def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int]:
+def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
     """
     Intelligently and robustly detects the column indices for:
     - Article (Артикул)
     - Name (Наименование)
     - Price (Цена/Тариф с НДС)
-    Returns a tuple of (col_article_idx, col_name_idx, col_price_idx).
+    And detects if the price column lists values in kopecks (is_kopecks).
+    Returns a tuple of (col_article_idx, col_name_idx, col_price_idx, is_kopecks).
     """
     if not rows:
-        return 0, 1, 2
+        return 0, 1, 2, False
 
     num_cols = len(rows[0])
     if num_cols == 0:
-        return 0, 1, 2
+        return 0, 1, 2, False
 
     article_scores = [0] * num_cols
     name_scores = [0] * num_cols
@@ -190,12 +243,22 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int]:
             best_article_idx = c
 
     if num_cols == 1:
-        return 0, 0, 0
+        return 0, 0, 0, False
     elif num_cols == 2:
-        return 0, best_name_idx, best_price_idx
+        return 0, best_name_idx, best_price_idx, False
 
-    logger.info(f"[Detect Columns] Selected: Article={best_article_idx}, Name={best_name_idx}, Price={best_price_idx}")
-    return best_article_idx, best_name_idx, best_price_idx
+    # Analyze if price header indicates kopecks
+    is_kopecks = False
+    if header_r_idx != -1 and best_price_idx < len(rows[header_r_idx]):
+        price_header_cell = rows[header_r_idx][best_price_idx]
+        if price_header_cell is not None:
+            header_str = str(price_header_cell).strip().lower()
+            if any(kw in header_str for kw in ["коп", "копеек", "копейки", "копейках"]) and not "копир" in header_str:
+                is_kopecks = True
+                logger.info(f"[Price Parser] Kopecks auto-division detected on header: '{header_str}'")
+
+    logger.info(f"[Detect Columns] Selected: Article={best_article_idx}, Name={best_name_idx}, Price={best_price_idx}, is_kopecks={is_kopecks}")
+    return best_article_idx, best_name_idx, best_price_idx, is_kopecks
 
 
 def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = None) -> Dict[str, float]:
@@ -213,8 +276,8 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
     if not rows:
         return price_map
 
-    col_article_idx, col_name_idx, col_price_idx = detect_columns(rows)
-    logger.info(f"[Price Parser] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}")
+    col_article_idx, col_name_idx, col_price_idx, is_kopecks = detect_columns(rows)
+    logger.info(f"[Price Parser] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}, is_kopecks={is_kopecks}")
 
     for row in rows:
         if not any(row):
@@ -227,20 +290,12 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         if not art_val and not name_val:
             continue
 
-        # Parse price strictly as float
-        price = 0.0
-        price_str = ""
-        try:
-            if price_val is not None:
-                price_str = str(price_val).strip()
-                # Clean currency symbols, spaces, and non-breaking spaces strictly!
-                price_clean = re.sub(r'[\s\xa0\u200b\u202f\t]+', '', price_str)
-                price_clean = price_clean.replace(",", ".")
-                price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
-                price = float(price_clean)
-        except ValueError:
-            price = 0.0
+        # Parse price with robust float parser
+        price = parse_robust_float(price_val)
+        if is_kopecks:
+            price /= 100.0
 
+        price_str = str(price_val).strip() if price_val is not None else ""
         article_str = str(art_val).strip() if art_val is not None else ""
 
         # Check if price equals article (this is an error)
@@ -266,8 +321,8 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
     if not rows:
         return []
 
-    col_article_idx, col_name_idx, col_price_idx = detect_columns(rows)
-    logger.info(f"[Price Parser Unified] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}")
+    col_article_idx, col_name_idx, col_price_idx, is_kopecks = detect_columns(rows)
+    logger.info(f"[Price Parser Unified] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}, is_kopecks={is_kopecks}")
 
     unified_items = []
 
@@ -282,19 +337,12 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         if not name_val:
             continue
 
-        price = 0.0
-        price_str = ""
-        try:
-            if price_val is not None:
-                price_str = str(price_val).strip()
-                # Clean currency symbols, spaces, and non-breaking spaces strictly!
-                price_clean = re.sub(r'[\s\xa0\u200b\u202f\t]+', '', price_str)
-                price_clean = price_clean.replace(",", ".")
-                price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
-                price = float(price_clean)
-        except ValueError:
-            price = 0.0
+        # Parse price with robust float parser
+        price = parse_robust_float(price_val)
+        if is_kopecks:
+            price /= 100.0
 
+        price_str = str(price_val).strip() if price_val is not None else ""
         name_str = str(name_val).strip()
         article_str = str(art_val).strip() if art_val is not None else ""
 
@@ -367,8 +415,8 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
     if not rows:
         return []
 
-    col_article_idx, col_name_idx, col_price_idx = detect_columns(rows)
-    logger.info(f"[Price Parser Raw] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}")
+    col_article_idx, col_name_idx, col_price_idx, is_kopecks = detect_columns(rows)
+    logger.info(f"[Price Parser Raw] col_article_idx={col_article_idx}, col_name_idx={col_name_idx}, col_price_idx={col_price_idx}, is_kopecks={is_kopecks}")
 
     raw_list = []
     for row in rows:
@@ -382,18 +430,12 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
         if not name_val:
             continue
 
-        price = 0.0
-        price_str = ""
-        try:
-            if price_val is not None:
-                price_str = str(price_val).strip()
-                price_clean = re.sub(r'[\s\xa0\u200b\u202f\t]+', '', price_str)
-                price_clean = price_clean.replace(",", ".")
-                price_clean = "".join(c for c in price_clean if c.isdigit() or c == ".")
-                price = float(price_clean)
-        except ValueError:
-            price = 0.0
+        # Parse price with robust float parser
+        price = parse_robust_float(price_val)
+        if is_kopecks:
+            price /= 100.0
 
+        price_str = str(price_val).strip() if price_val is not None else ""
         article_str = str(art_val).strip() if art_val is not None else ""
 
         # Check if price equals article (this is an error)
