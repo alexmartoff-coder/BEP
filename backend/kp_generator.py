@@ -116,7 +116,34 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
             elif poles and current_val:
                 key = f"{poles}_{current_val}"
                 if index_map and key in index_map and index_map[key]:
-                    matched_pos = index_map[key][0]
+                    candidates = index_map[key]
+                    best_cand = candidates[0]
+                    best_score = -1
+
+                    item_series = str(item.get("series") or "").strip().lower()
+                    item_type = str(item.get("type") or "").strip().lower()
+
+                    for cand in candidates:
+                        cand_name = str(cand.get("name") or cand.get("Наименование") or "").lower()
+                        cand_art = str(cand.get("article") or cand.get("Артикул") or "").lower()
+                        cand_series = str(cand.get("series") or "").lower()
+
+                        score = 0
+                        if item_series:
+                            if item_series in cand_series or item_series in cand_name or item_series in cand_art:
+                                score += 10
+                            # Extract base series prefix (e.g., NM8N, NXM, NB2)
+                            m_base = re.search(r'\b(nm8[ns]|nxm|nm1|nxb|nb[128]|nc[1278]|nvf[257]|nz7|nkb1|dz158|nr[8e]|nl1|nh4|nd2|nb1l)\b', item_series)
+                            if m_base and m_base.group(1) in cand_name:
+                                score += 5
+                        if item_type and item_type in cand_name:
+                            score += 2
+
+                        if score > best_score:
+                            best_score = score
+                            best_cand = cand
+
+                    matched_pos = best_cand
                     price = float(matched_pos.get("price") or 0.0)
                     art_candidate = str(matched_pos.get("article") or "").strip()
                     # Ensure no schematic label like QF* leaks into article

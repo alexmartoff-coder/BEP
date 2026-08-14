@@ -1,6 +1,7 @@
 import re
 from typing import Dict, List, Optional, Tuple
 from difflib import SequenceMatcher
+from backend.price_parser import extract_current_a_from_name, clean_key
 
 class SmartMatcher:
     def __init__(self, price_list: List[Dict]):
@@ -35,7 +36,9 @@ class SmartMatcher:
             if amp:
                 self.index['by_amp'].setdefault(amp, []).append(item)
             if article:
-                self.index['by_article'][article] = item
+                clean_art = clean_key(article)
+                if clean_art:
+                    self.index['by_article'][clean_art] = item
             for kw in keywords:
                 self.index['by_keyword'].setdefault(kw, []).append(item)
 
@@ -101,13 +104,27 @@ class SmartMatcher:
     def match(self, detected: Dict) -> Tuple[Optional[Dict], float]:
         """Сопоставляет с прайсом с автоопределением серии и сверх-устойчивым поиском"""
 
+        det_art = str(detected.get('article') or detected.get('mark') or '').strip()
+        det_name = str(detected.get('name') or '')
         series = str(detected.get('series') or detected.get('name') or '')
         nominal = str(detected.get('nominal') or detected.get('current_a') or '')
         poles = str(detected.get('poles') or '').upper().strip()
         dt = str(detected.get('type') or '')
 
+        # 0. Article direct matching check
+        if det_art and not re.match(r'(?i)^QF\d+$', det_art):
+            clean_det_art = clean_key(det_art)
+            if clean_det_art in self.index['by_article']:
+                return self.index['by_article'][clean_det_art], 1.0
+            for item in self.price_list:
+                item_art = str(item.get('Артикул') or item.get('article') or '').strip()
+                if item_art and clean_key(item_art) == clean_det_art:
+                    return item, 1.0
+
         # Извлекаем номинал
         amp = self._extract_amperage(nominal)
+        if not amp:
+            amp = self._extract_amperage(det_name)
         if not amp:
             current_a_val = detected.get('current_a')
             if current_a_val:
@@ -125,24 +142,26 @@ class SmartMatcher:
 
         # Извлекаем базовую серию
         base_series = None
-        for item_series in [series] + [self._extract_series(series) or ""]:
+        for item_series in [series, det_name]:
             if not item_series:
                 continue
-            m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8|NH4|NL1|NB1L)\b', item_series, re.IGNORECASE)
+            m = re.search(r'\b(NM8[N,S]|NXM|NM1|NXB|NB[1,2,8]|NC[1,2,7,8]|NVF[2,5,7]|NZ7|NKB1|DZ158|NR[8,E]|NL1|NH4|ND2|NB1L)\b', item_series, re.IGNORECASE)
             if m:
                 base_series = m.group(1).upper()
                 break
 
         if not base_series:
-            inferred = self._infer_series(poles_norm, amp, device_type=dt)
+            inferred = self._infer_series(poles_norm, amp, device_type=dt or det_name)
             if inferred:
-                m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8|NH4|NL1|NB1L)\b', inferred, re.IGNORECASE)
+                m = re.search(r'\b(NM8[N,S]|NXM|NM1|NXB|NB[1,2,8]|NC[1,2,7,8]|NVF[2,5,7]|NZ7|NKB1|DZ158|NR[8,E]|NL1|NH4|ND2|NB1L)\b', inferred, re.IGNORECASE)
                 if m:
                     base_series = m.group(1).upper()
 
         candidates = []
         for item in self.price_list:
-            item_name = item.get('Наименование', '')
+            item_name = str(item.get('Наименование') or item.get('name') or '')
+            if not item_name:
+                continue
 
             # 1. Извлекаем номинал позиции прайса
             item_amp = self._extract_amperage(item_name)
@@ -158,16 +177,24 @@ class SmartMatcher:
             if poles_norm and item_poles and poles_norm != item_poles:
                 continue
 
-            score = 0.5
+            # Base score when poles + amperage match
+            score = 0.65
+
             if base_series:
                 if base_series.lower() in item_name.lower():
-                    score += 0.4
-                    # Дополнительный бонус за точное совпадение полной серии
+                    score += 0.25
+                    # Bonus for exact series frame matching
                     full_series = series.split(' ')[0] if series else ""
-                    if len(full_series) > 4 and full_series.lower() in item_name.lower():
+                    if len(full_series) > 3 and full_series.lower() in item_name.lower():
                         score += 0.1
 
-            candidates.append((item, score))
+            # Bonus if device type keywords match
+            item_type = self._extract_type(item_name)
+            det_type = self._extract_type(det_name or dt)
+            if item_type and det_type and item_type == det_type:
+                score += 0.1
+
+            candidates.append((item, min(score, 1.0)))
 
         if candidates:
             candidates.sort(key=lambda x: x[1], reverse=True)
@@ -178,39 +205,31 @@ class SmartMatcher:
         return None, 0.0
 
     def _extract_series(self, name: str) -> Optional[str]:
-        patterns = [
-            r'(NM8[N,S]-\d+[A-Z])',
-            r'(NVF7-\d+[A-Z])',
-            r'(NKB1-\d+)',
-            r'(NB[2,8]-\d+[A-Z])',
-            r'(NC[1,8]-\d+)',
-            r'(NR[8,E]-\d+)',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, name)
-            if match:
-                return match.group(0)
+        if not name:
+            return None
+        match = re.search(r'\b((?:NM8[N,S]|NXM|NM1|NXB|NB[1,2,8]|NC[1,2,7,8]|NVF[2,5,7]|NZ7|NKB1|DZ158|NR[8,E]|NL1|NH4|ND2)[-A-Z0-9/]*)\b', name, re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
         return None
 
     def _extract_type(self, name: str) -> Optional[str]:
         types = {
-            'автомат': ['Авт. выкл.', 'автоматический'],
-            'преобразователь': ['Преобразователь', 'NVF7'],
-            'пускатель': ['Пускатель', 'NKB1'],
+            'автомат': ['Авт. выкл.', 'автоматический', 'выключатель'],
+            'преобразователь': ['Преобразователь', 'NVF'],
+            'пускатель': ['Пускатель', 'NKB'],
             'контактор': ['Контактор', 'NC'],
             'реле': ['Реле', 'NR'],
             'блок': ['Блок', 'адаптер'],
         }
         for type_name, keywords in types.items():
-            if any(kw in name for kw in keywords):
+            if any(kw.lower() in name.lower() for kw in keywords):
                 return type_name
         return None
 
     def _extract_amperage(self, text: str) -> Optional[int]:
-        match = re.search(r'(\d+)\s*[АA]', str(text))
-        if match:
-            return int(match.group(1))
-        return None
+        if not text:
+            return None
+        return extract_current_a_from_name(str(text))
 
     def _extract_keywords(self, name: str) -> List[str]:
         keywords = []
