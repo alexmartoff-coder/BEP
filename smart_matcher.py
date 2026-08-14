@@ -39,10 +39,31 @@ class SmartMatcher:
             for kw in keywords:
                 self.index['by_keyword'].setdefault(kw, []).append(item)
 
-    def _infer_series(self, poles: str, amperage: int) -> str:
-        """Определяет серию на основе полюсности и номинала"""
+    def _infer_series(self, poles: str, amperage: int, device_type: str = "") -> str:
+        """Определяет серию на основе полюсности, номинала и типа устройства"""
+        dt_clean = str(device_type or "").lower().strip()
 
-        # 3P автоматы
+        # 1. Рубильники (QS) -> серия NH4 или DZ158
+        if "рубильник" in dt_clean or "выключатель нагрузки" in dt_clean:
+            return "NH4"
+
+        # 2. УЗО (QD) -> серия NL1
+        if "узо" in dt_clean:
+            return "NL1"
+
+        # 3. Дифавтоматы (QFD) -> серия NB1L
+        if "дифавтомат" in dt_clean or "авдт" in dt_clean:
+            return "NB1L"
+
+        # 4. Контакторы (KM) -> серия NC1 или NC8
+        if "контактор" in dt_clean:
+            return "NC8"
+
+        # 5. Преобразователи частоты (U) -> серия NVF7
+        if "преобразователь" in dt_clean or "частотник" in dt_clean:
+            return "NVF7"
+
+        # 3P автоматы (QF)
         if poles == "3P":
             if amperage >= 800:
                 return "NM8N-1600Q EN 3P"
@@ -55,7 +76,7 @@ class SmartMatcher:
             else:
                 return "NB2-40ZT 3P"
 
-        # 1P автоматы
+        # 1P автоматы (QF)
         elif poles == "1P":
             if amperage >= 63:
                 return "NB2-80ZT 1P"
@@ -66,7 +87,7 @@ class SmartMatcher:
             else:
                 return "NB2-40ZT 1P"
 
-        # 4P автоматы
+        # 4P автоматы (QF)
         elif poles == "4P":
             if amperage >= 800:
                 return "NM8N-1600Q EN 4P"
@@ -83,6 +104,7 @@ class SmartMatcher:
         series = str(detected.get('series') or detected.get('name') or '')
         nominal = str(detected.get('nominal') or detected.get('current_a') or '')
         poles = str(detected.get('poles') or '').upper().strip()
+        dt = str(detected.get('type') or '')
 
         # Извлекаем номинал
         amp = self._extract_amperage(nominal)
@@ -106,15 +128,15 @@ class SmartMatcher:
         for item_series in [series] + [self._extract_series(series) or ""]:
             if not item_series:
                 continue
-            m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8)\b', item_series, re.IGNORECASE)
+            m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8|NH4|NL1|NB1L)\b', item_series, re.IGNORECASE)
             if m:
                 base_series = m.group(1).upper()
                 break
 
         if not base_series:
-            inferred = self._infer_series(poles_norm, amp)
+            inferred = self._infer_series(poles_norm, amp, device_type=dt)
             if inferred:
-                m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8)\b', inferred, re.IGNORECASE)
+                m = re.search(r'\b(NM8[N,S]|NB[2,8]|NC[1,8]|NVF7|NKB1|NR8|NRE8|NH4|NL1|NB1L)\b', inferred, re.IGNORECASE)
                 if m:
                     base_series = m.group(1).upper()
 
