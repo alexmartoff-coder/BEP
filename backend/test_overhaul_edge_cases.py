@@ -45,6 +45,43 @@ def test_parse_price_list_raw_overlapping_bug():
     assert content_rows[0]["price"] == 1000.50
     assert content_rows[1]["price"] == 0.0  # Safe recovery from price overlap bug!
 
+def test_detect_columns_robustness():
+    from backend.price_parser import detect_columns
+
+    # Custom Excel table #1: Russian alternate headers
+    rows_1 = [
+        ("Код товара", "Название позиции", "Цена"),
+        ("12345", "Автоматический выключатель CHINT NB2 3P 16A", "150.00"),
+        ("67890", "Автоматический выключатель CHINT NB2 3P 32A", "250.00")
+    ]
+    art_idx, name_idx, price_idx = detect_columns(rows_1)
+    assert art_idx == 0
+    assert name_idx == 1
+    assert price_idx == 2
+
+    # Custom Excel table #2: Scrambled columns & English headers
+    rows_2 = [
+        ("Price", "Code", "Item Description"),
+        ("150.00", "12345", "Автоматический выключатель CHINT NB2 3P 16A"),
+        ("250.00", "67890", "Автоматический выключатель CHINT NB2 3P 32A")
+    ]
+    art_idx, name_idx, price_idx = detect_columns(rows_2)
+    assert art_idx == 1
+    assert name_idx == 2
+    assert price_idx == 0
+
+    # Custom Excel table #3: Missing headers completely (uses numeric fallback & content analysis)
+    # The first row is raw values, not headers.
+    rows_3 = [
+        ("99999", "Автоматический выключатель CHINT DZ158 3P 100A", "1200.50"),
+        ("88888", "Автоматический выключатель CHINT DZ158 3P 125A", "1500.00")
+    ]
+    art_idx, name_idx, price_idx = detect_columns(rows_3)
+    assert art_idx == 0
+    assert name_idx == 1
+    assert price_idx == 2
+
+
 def test_text_fallback_scheme_parser_parallel_sequences():
     # Simulate parallel sequence lists from diagrams
     input_text = """
