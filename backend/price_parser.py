@@ -79,13 +79,8 @@ def extract_current_a_from_name(name_str: str) -> Optional[int]:
     # 1. Clean breaking capacity (кА / kA)
     name_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', name_str, flags=re.IGNORECASE)
 
-    # 2. Clean product series frame sizes
-    name_clean = re.sub(r'\bNM8[N,S]-\d+[A-Z]?\b', '', name_clean, flags=re.IGNORECASE)
-    name_clean = re.sub(r'\bNVF7-\d+(?:\.\d+)?[A-Z]?\b', '', name_clean, flags=re.IGNORECASE)
-    name_clean = re.sub(r'\bNKB1-\d+\b', '', name_clean, flags=re.IGNORECASE)
-    name_clean = re.sub(r'\bNB[2,8]-\d+[A-Z]?\b', '', name_clean, flags=re.IGNORECASE)
-    name_clean = re.sub(r'\bNC[1,8]-\d+\b', '', name_clean, flags=re.IGNORECASE)
-    name_clean = re.sub(r'\bNR[8,E]-\d+\b', '', name_clean, flags=re.IGNORECASE)
+    # 1. Clean product series frame sizes (e.g. NM8N-250, NXM-160S, NXB-63, DZ158-125)
+    name_clean = re.sub(r'\b(?:NM8[N,S]|NXM|NM1|NXB|NB[1,2,8]|NC[1,2,7,8]|NVF[2,5,7]|NZ7|NKB1|DZ158|NR[8,E]|NL1|NH4|ND2)-\d+[A-Z0-9/-]*\b', '', name_clean, flags=re.IGNORECASE)
 
     # Find all poles positions (1P/2P/3P/4P)
     poles_indices = []
@@ -152,39 +147,44 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
             header_r_idx = r_idx
             break
 
-    scan_rows = [header_r_idx] if header_r_idx != -1 else list(range(min(5, len(rows))))
-
-    for r_idx in scan_rows:
-        if r_idx < 0 or r_idx >= len(rows):
+    # Multi-row combined header scan per column
+    max_header_rows = min(10, len(rows))
+    for c_idx in range(num_cols):
+        col_text = " ".join(
+            str(rows[r_idx][c_idx]).strip().lower()
+            for r_idx in range(max_header_rows)
+            if c_idx < len(rows[r_idx]) and rows[r_idx][c_idx] is not None
+        )
+        if not col_text:
             continue
-        row = rows[r_idx]
-        for c_idx in range(min(num_cols, len(row))):
-            val = row[c_idx]
-            if val is None:
-                continue
-            val_str = str(val).strip().lower()
-            if not val_str:
-                continue
 
-            # Price matches
-            if any(kw in val_str for kw in ['цена с ндс', 'тариф с ндс', 'тариф', 'цена', 'стоимость', 'price', 'cost', 'rate']):
-                price_scores[c_idx] += 150
-            elif 'ндс' in val_str or 'руб' in val_str:
-                price_scores[c_idx] += 80
+        # Article matches
+        if any(kw in col_text for kw in ['код товара', 'код номенклатуры', 'артикул', 'код', 'арт.', 'арт', 'sku', 'article', 'code']):
+            article_scores[c_idx] += 150
+        elif 'id' in col_text:
+            article_scores[c_idx] += 80
 
-            # Name matches
-            if any(kw in val_str for kw in ['наименование', 'номенклатура', 'название', 'описание', 'name', 'description', 'item', 'позиция']):
-                if not any(kw in val_str for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
-                    name_scores[c_idx] += 150
-            elif 'товар' in val_str:
-                if not any(kw in val_str for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
-                    name_scores[c_idx] += 80
+        # Name matches
+        if any(kw in col_text for kw in ['наименование', 'номенклатура', 'название', 'описание', 'name', 'description', 'item', 'позиция']):
+            if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
+                name_scores[c_idx] += 150
+        elif 'товар' in col_text:
+            if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
+                name_scores[c_idx] += 80
 
-            # Article matches
-            if any(kw in val_str for kw in ['код товара', 'код номенклатуры', 'артикул', 'код', 'арт.', 'арт', 'sku', 'article', 'code']):
-                article_scores[c_idx] += 150
-            elif 'id' in val_str:
-                article_scores[c_idx] += 80
+        # Price matches - strongly prioritize 'с НДС' over 'без НДС'
+        has_price_kw = any(kw in col_text for kw in ['цена', 'тариф', 'стоимость', 'price', 'cost', 'rate'])
+        has_with_vat = any(kw in col_text for kw in ['с ндс', 'с учетом ндс', 'тариф с ндс', 'цена с ндс', 'вкл ндс', 'сндс'])
+        has_without_vat = 'без ндс' in col_text or 'безндс' in col_text
+
+        if has_with_vat:
+            price_scores[c_idx] += 250
+        elif has_price_kw and not has_without_vat:
+            price_scores[c_idx] += 150
+        elif has_price_kw and has_without_vat:
+            price_scores[c_idx] += 60  # Lesser score for 'без НДС' column if 'с НДС' exists
+        elif 'ндс' in col_text or 'руб' in col_text:
+            price_scores[c_idx] += 80
 
     # 2. Content analysis on remaining rows
     start_content_row = header_r_idx + 1 if header_r_idx != -1 else 0
@@ -360,21 +360,11 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         # 2. Extract current_a using the highly intelligent amperage extractor
         current_a = extract_current_a_from_name(name_str)
 
-        # 3. Extract series
+        # 3. Extract series (expanded pattern covering CHINT & common electrical breaker families)
         series = None
-        patterns = [
-            r'(NM8[N,S]-\d+[A-Z]?)',
-            r'(NVF7-\d+[A-Z]?)',
-            r'(NKB1-\d+)',
-            r'(NB[2,8]-\d+[A-Z]?)',
-            r'(NC[1,8]-\d+)',
-            r'(NR[8,E]-\d+)',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, name_str)
-            if match:
-                series = match.group(0)
-                break
+        series_match = re.search(r'\b((?:NM8[N,S]|NXM|NM1|NXB|NB[1,2,8]|NC[1,2,7,8]|NVF[2,5,7]|NZ7|NKB1|DZ158|NR[8,E]|NL1|NH4|ND2)[-A-Z0-9/]*)\b', name_str, re.IGNORECASE)
+        if series_match:
+            series = series_match.group(1).upper()
 
         unified_items.append({
             "article": article_str,

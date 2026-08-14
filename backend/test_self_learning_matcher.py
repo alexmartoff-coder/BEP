@@ -55,6 +55,58 @@ def test_smart_matcher_match():
     assert matched_item_2["Артикул"] == "ART-102"
     assert score_2 >= 0.8
 
+def test_smart_matcher_article_and_expanded_series():
+    mock_price_list = [
+        {"Артикул": "12345", "Наименование": "Автоматический выключатель NXB-63 1P 16A", "Тариф с НДС, руб": 350.0},
+        {"Артикул": "67890", "Наименование": "Автоматический выключатель NXM-160S 3P 125A", "Тариф с НДС, руб": 4500.0},
+        {"Артикул": "99999", "Наименование": "Выключатель нагрузки DZ158-125 3P 100A", "Тариф с НДС, руб": 1200.0},
+    ]
+
+    matcher = SmartMatcher(mock_price_list)
+
+    # 1. Direct article match
+    det_art = {"article": "12345", "series": "NXB-63", "nominal": "16A", "poles": "1P"}
+    matched_art, score_art = matcher.match(det_art)
+    assert matched_art is not None
+    assert matched_art["Артикул"] == "12345"
+    assert score_art == 1.0
+
+    # 2. Expanded series NXM match
+    det_nxm = {"series": "NXM-160S", "nominal": "125A", "poles": "3P"}
+    matched_nxm, score_nxm = matcher.match(det_nxm)
+    assert matched_nxm is not None
+    assert matched_nxm["Артикул"] == "67890"
+
+    # 3. Expanded series DZ158 match
+    det_dz = {"series": "DZ158-125", "nominal": "100A", "poles": "3P", "type": "выключатель нагрузки"}
+    matched_dz, score_dz = matcher.match(det_dz)
+    assert matched_dz is not None
+    assert matched_dz["Артикул"] == "99999"
+
+def test_kp_generator_index_candidate_ranking():
+    from backend.kp_generator import generate_preliminary_kp
+
+    # Index map has 2 candidates under key "3P_125": one NXB and one NXM
+    index_map = {
+        "3P_125": [
+            {"article": "ART-NXB", "name": "Выключатель NXB-125 3P 125A", "price": 800.0, "series": "NXB"},
+            {"article": "ART-NXM", "name": "Выключатель NXM-160S 3P 125A", "price": 4500.0, "series": "NXM"}
+        ]
+    }
+
+    boards = [{
+        "board_name": "Щит 1",
+        "items": [
+            {"poles": "3P", "current_a": "125", "series": "NXM-160S", "qty": 1}
+        ]
+    }]
+
+    kp = generate_preliminary_kp(boards, {}, index_map)
+    item = kp["boards"][0]["items"][0]
+    # Should pick ART-NXM based on series rank, NOT ART-NXB
+    assert item["article"] == "ART-NXM"
+    assert item["price"] == 4500.0
+
 def test_smart_matcher_series_nominal_poles_matching():
     """Test precise series + nominal + poles matching required for the final stage."""
     mock_price_list = [

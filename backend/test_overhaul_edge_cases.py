@@ -45,6 +45,21 @@ def test_parse_price_list_raw_overlapping_bug():
     assert content_rows[0]["price"] == 1000.50
     assert content_rows[1]["price"] == 0.0  # Safe recovery from price overlap bug!
 
+def test_detect_columns_multi_vat_prioritization():
+    from backend.price_parser import detect_columns
+
+    # Multi-column table with both 'Цена без НДС' and 'Цена с НДС'
+    rows = [
+        ("Артикул", "Наименование", "Цена без НДС, руб.", "Цена с НДС, руб."),
+        ("ART-01", "Авт. выкл. NXB-63 1P 16A", "100.00", "120.00"),
+        ("ART-02", "Авт. выкл. NXB-63 1P 32A", "150.00", "180.00")
+    ]
+    art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows)
+    assert art_idx == 0
+    assert name_idx == 1
+    assert price_idx == 3  # Must pick column index 3 ('Цена с НДС') over column index 2 ('Цена без НДС')
+    assert is_kopecks is False
+
 def test_detect_columns_robustness():
     from backend.price_parser import detect_columns
 
