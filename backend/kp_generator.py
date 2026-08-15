@@ -6,6 +6,7 @@ import io
 import re
 import logging
 from backend.price_parser import clean_key
+from smart_matcher import get_device_category
 
 logger = logging.getLogger("kp_generator")
 
@@ -122,17 +123,25 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
 
                     item_series = str(item.get("series") or "").strip().lower()
                     item_type = str(item.get("type") or "").strip().lower()
+                    item_cat = get_device_category(' '.join([str(item.get("name") or ""), item_series, item_type]))
 
                     for cand in candidates:
                         cand_name = str(cand.get("name") or cand.get("Наименование") or "").lower()
                         cand_art = str(cand.get("article") or cand.get("Артикул") or "").lower()
                         cand_series = str(cand.get("series") or "").lower()
+                        cand_cat = get_device_category(cand_name)
 
                         score = 0
+                        # Check category conflict (e.g. breaker vs VFD)
+                        if item_cat != 'unknown' and cand_cat != 'unknown' and item_cat != cand_cat:
+                            score -= 100
+                        else:
+                            score += 10
+
                         if item_series:
                             if item_series in cand_series or item_series in cand_name or item_series in cand_art:
                                 score += 10
-                            # Extract base series prefix (e.g., NM8N, NXM, NB2)
+                            # Extract base series prefix (e.g., NM8N, NXM, NB2, NB8)
                             m_base = re.search(r'\b(nm8[ns]|nxm|nm1|nxb|nb[128]|nc[1278]|nvf[257]|nz7|nkb1|dz158|nr[8e]|nl1|nh4|nd2|nb1l)\b', item_series)
                             if m_base and m_base.group(1) in cand_name:
                                 score += 5

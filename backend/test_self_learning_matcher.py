@@ -55,6 +55,29 @@ def test_smart_matcher_match():
     assert matched_item_2["Артикул"] == "ART-102"
     assert score_2 >= 0.8
 
+def test_breaker_vfd_category_isolation():
+    mock_price_list = [
+        {"Артикул": "VFD-100", "Наименование": "Преобразователь частоты 1P 100A NVF7-100", "Тариф с НДС, руб": 559839.00},
+        {"Артикул": "NB8-100", "Наименование": "Авт. выкл. NB8-125R 1P 100А 20кА", "Тариф с НДС, руб": 8208.66}
+    ]
+
+    matcher = SmartMatcher(mock_price_list)
+
+    # Circuit breaker detected from PDF (QF1 1P 100A)
+    detected_breaker = {
+        "name": "QF1 1P 100A",
+        "series": "",
+        "nominal": "100A",
+        "poles": "1P",
+        "type": "MCB"
+    }
+
+    matched, score = matcher.match(detected_breaker)
+    assert matched is not None
+    # Must match NB8-125R circuit breaker (8208.66 руб), NOT Frequency Converter VFD (559839.00 руб)
+    assert matched["Артикул"] == "NB8-100"
+    assert matched["Тариф с НДС, руб"] == 8208.66
+
 def test_smart_matcher_article_and_expanded_series():
     mock_price_list = [
         {"Артикул": "12345", "Наименование": "Автоматический выключатель NXB-63 1P 16A", "Тариф с НДС, руб": 350.0},

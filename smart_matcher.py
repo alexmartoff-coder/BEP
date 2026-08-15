@@ -3,6 +3,21 @@ from typing import Dict, List, Optional, Tuple
 from difflib import SequenceMatcher
 from backend.price_parser import extract_current_a_from_name, clean_key
 
+def get_device_category(text: str) -> str:
+    """Определяет укрупненную категорию оборудования для предотвращения некорректных сопоставлений"""
+    s = str(text or '').lower()
+    if any(k in s for k in ['преобразователь', 'частотник', 'vfd', 'nvf']):
+        return 'vfd'
+    if any(k in s for k in ['контактор', 'пускатель', 'km', 'nc1', 'nc2', 'nc7', 'nc8', 'nkb']):
+        return 'contactor'
+    if any(k in s for k in ['рубильник', 'выключатель нагрузки', 'qs', 'nh4']):
+        return 'disconnector'
+    if any(k in s for k in ['узо', 'дифавтомат', 'авдт', 'qd', 'qfd', 'nl1', 'nb1l']):
+        return 'rccb'
+    if any(k in s for k in ['авт. выкл', 'автоматический выключатель', 'автомат', 'mcb', 'mccb', 'qf', 'nm8', 'nxm', 'nxb', 'nb', 'dz158', 'nm1']):
+        return 'breaker'
+    return 'unknown'
+
 class SmartMatcher:
     def __init__(self, price_list: List[Dict]):
         self.price_list = price_list
@@ -157,10 +172,17 @@ class SmartMatcher:
                 if m:
                     base_series = m.group(1).upper()
 
+        det_cat = get_device_category(' '.join([det_name, dt, series, det_art]))
+
         candidates = []
         for item in self.price_list:
             item_name = str(item.get('Наименование') or item.get('name') or '')
             if not item_name:
+                continue
+
+            # Check category conflict (e.g. breaker vs VFD)
+            cand_cat = get_device_category(item_name)
+            if det_cat != 'unknown' and cand_cat != 'unknown' and det_cat != cand_cat:
                 continue
 
             # 1. Извлекаем номинал позиции прайса
@@ -177,7 +199,7 @@ class SmartMatcher:
             if poles_norm and item_poles and poles_norm != item_poles:
                 continue
 
-            # Base score when poles + amperage match
+            # Base score when poles + amperage + category match
             score = 0.65
 
             if base_series:
