@@ -119,12 +119,78 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // High-Tech Progress Controller
+    const progressBarFill = document.getElementById('progress-bar-fill');
+    const progressPercentVal = document.getElementById('progress-percent-val');
+    const progressLogMsg = document.getElementById('progress-log-msg');
+    const stage1 = document.getElementById('stage-1');
+    const stage2 = document.getElementById('stage-2');
+    const stage3 = document.getElementById('stage-3');
+
+    let progressTimer = null;
+
+    function startProgressPipeline() {
+        if (progressTimer) clearInterval(progressTimer);
+
+        let currentPercent = 0;
+        updateProgressUI(0, 1, 'Инициализация и передача PDF файла на сервер...');
+
+        progressTimer = setInterval(() => {
+            if (currentPercent < 35) {
+                currentPercent += 2;
+                updateProgressUI(currentPercent, 1, 'Извлечение оборудования с чертежа (Vision OCR AI)...');
+            } else if (currentPercent < 75) {
+                currentPercent += 1;
+                updateProgressUI(currentPercent, 2, 'Сопоставление позиций и цен по базе прайс-листов (SmartMatcher)...');
+            } else if (currentPercent < 98) {
+                currentPercent += 1;
+                updateProgressUI(currentPercent, 3, 'Группировка по щитам и расчет коммерческого предложения...');
+            }
+        }, 120);
+    }
+
+    function completeProgressPipeline(callback) {
+        if (progressTimer) clearInterval(progressTimer);
+        updateProgressUI(100, 3, 'Коммерческое предложение успешно рассчитано!');
+        setTimeout(() => {
+            generalLoaderCard.classList.add('hidden');
+            if (callback) callback();
+        }, 500);
+    }
+
+    function resetProgressPipeline() {
+        if (progressTimer) clearInterval(progressTimer);
+        generalLoaderCard.classList.add('hidden');
+    }
+
+    function updateProgressUI(percent, activeStageNum, logMessage) {
+        progressBarFill.style.width = `${percent}%`;
+        progressPercentVal.textContent = `${percent}%`;
+        progressLogMsg.textContent = logMessage;
+
+        // Stages update
+        [stage1, stage2, stage3].forEach((stage, idx) => {
+            const sNum = idx + 1;
+            stage.classList.remove('active', 'completed');
+            if (sNum < activeStageNum) {
+                stage.classList.add('completed');
+            } else if (sNum === activeStageNum) {
+                if (percent === 100 && sNum === 3) {
+                    stage.classList.add('completed');
+                } else {
+                    stage.classList.add('active');
+                }
+            }
+        });
+    }
+
     // Call API generate KP
     generateKpBtn.addEventListener('click', () => {
         if (!pdfFile || (priceFiles.length === 0 && !activePricelistName)) return;
 
         generalLoaderCard.classList.remove('hidden');
         kpResultsContainer.classList.add('hidden');
+        startProgressPipeline();
 
         const formData = new FormData();
         formData.append('specification', pdfFile);
@@ -145,33 +211,35 @@ document.addEventListener('DOMContentLoaded', () => {
             return res.json();
         })
         .then(data => {
-            generalLoaderCard.classList.add('hidden');
             if (data.status === 'success' && data.kp) {
-                activeKpData = data.kp;
+                completeProgressPipeline(() => {
+                    activeKpData = data.kp;
 
-                // Show raw text block
-                extractedTextViewer.textContent = data.extracted_text || 'Текст пуст или не был извлечён.';
+                    // Show raw text block
+                    extractedTextViewer.textContent = data.extracted_text || 'Текст пуст или не был извлечён.';
 
-                // Update file info subtext
-                const prNames = priceFiles.length > 0
-                    ? priceFiles.map(f => f.name).join(', ')
-                    : activePricelistName;
+                    // Update file info subtext
+                    const prNames = priceFiles.length > 0
+                        ? priceFiles.map(f => f.name).join(', ')
+                        : activePricelistName;
 
-                kpFilesInfo.innerHTML = `Сформировано на основе проекта <strong>"${escapeHtml(pdfFile.name)}"</strong> и прайс-листов: <strong>${escapeHtml(prNames)}</strong>`;
+                    kpFilesInfo.innerHTML = `Сформировано на основе проекта <strong>"${escapeHtml(pdfFile.name)}"</strong> и прайс-листов: <strong>${escapeHtml(prNames)}</strong>`;
 
-                // If a new price list was uploaded, update activePricelistName state
-                if (priceFiles.length > 0) {
-                    activePricelistName = priceFiles[0].name;
-                }
+                    // If a new price list was uploaded, update activePricelistName state
+                    if (priceFiles.length > 0) {
+                        activePricelistName = priceFiles[0].name;
+                    }
 
-                renderKpTables(data.kp);
-                kpResultsContainer.classList.remove('hidden');
+                    renderKpTables(data.kp);
+                    kpResultsContainer.classList.remove('hidden');
+                });
             } else {
+                resetProgressPipeline();
                 alert('Ошибка: сервер вернул некорректный ответ.');
             }
         })
         .catch(err => {
-            generalLoaderCard.classList.add('hidden');
+            resetProgressPipeline();
             console.error(err);
             alert(`Произошла ошибка при генерации КП: ${err.message}`);
         });

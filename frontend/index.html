@@ -106,13 +106,60 @@
             </div>
         </section>
 
-        <!-- Global loader card while processing files -->
+        <!-- Global high-tech progress section while processing files -->
         <section class="status-section hidden" id="general-loader-card">
-            <div class="status-card">
-                <div class="spinner"></div>
-                <div class="status-info">
-                    <h4 id="general-loader-title">Идёт распознавание документа и расчет...</h4>
-                    <p id="general-loader-subtitle">Извлекаем позиции из PDF проекта и сопоставляем цены по загруженным прайс-листам.</p>
+            <div class="tech-progress-card">
+                <div class="progress-card-header">
+                    <div class="tech-badge">
+                        <span class="pulsing-dot"></span>
+                        <span id="progress-status-badge">Интеллектуальная обработка БЭП AI</span>
+                    </div>
+                    <div class="progress-percent" id="progress-percent-val">0%</div>
+                </div>
+
+                <!-- Animated Progress Bar Track -->
+                <div class="progress-track-wrapper">
+                    <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%;"></div>
+                </div>
+
+                <!-- Pipeline Stages -->
+                <div class="pipeline-stages">
+                    <div class="stage-item" id="stage-1">
+                        <div class="stage-icon">
+                            <span class="stage-num">1</span>
+                            <span class="stage-check">✓</span>
+                        </div>
+                        <div class="stage-info">
+                            <div class="stage-title">Распознавание PDF проекта</div>
+                            <div class="stage-sub">Vision OCR AI</div>
+                        </div>
+                    </div>
+
+                    <div class="stage-item" id="stage-2">
+                        <div class="stage-icon">
+                            <span class="stage-num">2</span>
+                            <span class="stage-check">✓</span>
+                        </div>
+                        <div class="stage-info">
+                            <div class="stage-title">Поиск цен и сопоставление</div>
+                            <div class="stage-sub">SmartMatcher AI</div>
+                        </div>
+                    </div>
+
+                    <div class="stage-item" id="stage-3">
+                        <div class="stage-icon">
+                            <span class="stage-num">3</span>
+                            <span class="stage-check">✓</span>
+                        </div>
+                        <div class="stage-info">
+                            <div class="stage-title">Формирование и расчет КП</div>
+                            <div class="stage-sub">Генерация Excel</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="progress-log-footer" id="progress-log-msg">
+                    Инициализация процесса обработки спецификации...
                 </div>
             </div>
         </section>
