@@ -158,37 +158,47 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
         if not col_text:
             continue
 
+        # Penalize non-essential category / metadata columns so they don't override articles
+        if any(kw in col_text for kw in ['тип', 'склад', 'ед.изм', 'ед. изм', 'вес', 'масса', 'объем', 'наличие', 'статус', 'бренд', 'группа', 'категория']):
+            article_scores[c_idx] -= 500
+            name_scores[c_idx] -= 500
+            price_scores[c_idx] -= 500
+
         # Article matches
         if any(kw in col_text for kw in ['код товара', 'код номенклатуры', 'артикул', 'код', 'арт.', 'арт', 'sku', 'article', 'code']):
-            article_scores[c_idx] += 150
+            article_scores[c_idx] += 1000
         elif 'id' in col_text:
-            article_scores[c_idx] += 80
+            article_scores[c_idx] += 500
 
         # Name matches
         if any(kw in col_text for kw in ['наименование', 'номенклатура', 'название', 'описание', 'name', 'description', 'item', 'позиция']):
             if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
-                name_scores[c_idx] += 150
+                name_scores[c_idx] += 1000
         elif 'товар' in col_text:
             if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
-                name_scores[c_idx] += 80
+                name_scores[c_idx] += 500
 
-        # Price matches - strongly prioritize 'с НДС' over 'без НДС', but give 'Тариф' / 'Тариф без НДС' >= 180 points
+        # Price matches - strongly prioritize 'с НДС' over 'без НДС'
         has_price_kw = any(kw in col_text for kw in ['цена', 'тариф', 'стоимость', 'price', 'cost', 'rate'])
         has_with_vat = any(kw in col_text for kw in ['с ндс', 'с учетом ндс', 'тариф с ндс', 'цена с ндс', 'вкл ндс', 'сндс'])
         has_without_vat = 'без ндс' in col_text or 'безндс' in col_text or 'б/ндс' in col_text
 
         if has_with_vat:
-            price_scores[c_idx] += 250
+            price_scores[c_idx] += 1000
         elif has_price_kw and not has_without_vat:
-            price_scores[c_idx] += 200
+            price_scores[c_idx] += 800
         elif has_price_kw and has_without_vat:
-            price_scores[c_idx] += 180  # Strong score so 'Тариф без НДС' beats raw numeric content rows
+            price_scores[c_idx] += 700
         elif 'ндс' in col_text or 'руб' in col_text:
-            price_scores[c_idx] += 80
+            price_scores[c_idx] += 300
 
-    # 2. Content analysis on remaining rows
+    # 2. Content analysis on remaining rows (capped to max 50 points total to avoid overriding headers)
     start_content_row = header_r_idx + 1 if header_r_idx != -1 else 0
-    for r_idx in range(start_content_row, len(rows)):
+    raw_content_art = [0] * num_cols
+    raw_content_name = [0] * num_cols
+    raw_content_price = [0] * num_cols
+
+    for r_idx in range(start_content_row, min(start_content_row + 30, len(rows))):
         row = rows[r_idx]
         for c_idx in range(min(num_cols, len(row))):
             val = row[c_idx]
@@ -202,19 +212,23 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
             clean_str = re.sub(r'[\s\xa0\u200b\u202f\tруб\$€₽]+', '', val_str).replace(',', '.')
             if re.match(r'^\d+(\.\d+)?$', clean_str):
                 is_num = True
-                val_float = float(clean_str)
 
             if is_num:
                 if '.' in clean_str:
-                    price_scores[c_idx] += 5
+                    raw_content_price[c_idx] += 5
                 else:
-                    price_scores[c_idx] += 1
-                    article_scores[c_idx] += 1
+                    raw_content_price[c_idx] += 1
+                    raw_content_art[c_idx] += 1
             else:
                 if len(val_str) > 15 and ' ' in val_str:
-                    name_scores[c_idx] += 5
+                    raw_content_name[c_idx] += 5
                 elif 3 <= len(val_str) <= 25:
-                    article_scores[c_idx] += 3
+                    raw_content_art[c_idx] += 3
+
+    for c_idx in range(num_cols):
+        article_scores[c_idx] += min(raw_content_art[c_idx], 50)
+        name_scores[c_idx] += min(raw_content_name[c_idx], 50)
+        price_scores[c_idx] += min(raw_content_price[c_idx], 50)
 
     # Selection logic
     best_price_idx = 0
