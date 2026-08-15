@@ -545,6 +545,7 @@ async def generate_kp(
 
         # Apply strict trash filter and normalization
         from backend.pdf_parser import is_trash_item
+        from backend.price_parser import extract_current_a_from_name
         valid_items = []
         for item in source_items:
             item_name = str(item.get("name") or item.get("mark") or "")
@@ -555,12 +556,16 @@ async def generate_kp(
                 continue
             current_val = str(item.get("current_a") or "")
             if not current_val:
-                current_digits_match = re.search(r'\d+', nominal_str)
-                current_val = current_digits_match.group(0) if current_digits_match else ""
+                extracted_a = extract_current_a_from_name(f"{item_name} {nominal_str}")
+                if extracted_a:
+                    current_val = str(extracted_a)
+                else:
+                    current_digits_match = re.search(r'\b\d+\b', nominal_str)
+                    current_val = current_digits_match.group(0) if current_digits_match else ""
             poles_val = str(item.get("poles") or "3P")
             valid_items.append({
                 "article": str(item.get("mark") or ""),
-                "name": f"Авт. выкл. {poles_val} {current_val}А" if current_val else item_name,
+                "name": item_name if item_name else (f"Авт. выкл. {poles_val} {current_val}А" if current_val else "Авт. выкл."),
                 "qty": int(item.get("qty") or 1),
                 "unit": "шт",
                 "poles": poles_val,
