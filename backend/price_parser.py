@@ -16,20 +16,25 @@ def clean_key(val: Any) -> str:
 
 def parse_robust_float(val: Any) -> float:
     """
-    Intelligently and robustly parses pricing strings into floats, handling
+    Intelligently and robustly parses pricing values into floats, handling
     varying formats of thousands and decimal separators (Russian/English/German).
     """
     if val is None:
         return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+
     s = str(val).strip()
     if not s:
         return 0.0
+
     # Strip spaces and currency symbols
     s = re.sub(r'[\s\xa0\u200b\u202f\tруб\$€₽]+', '', s, flags=re.IGNORECASE)
     # Strip trailing dot from abbreviations like 'руб.'
     s = s.rstrip('.')
     if not s:
         return 0.0
+
     if '.' in s and ',' in s:
         dot_idx = s.find('.')
         comma_idx = s.find(',')
@@ -46,11 +51,9 @@ def parse_robust_float(val: Any) -> float:
         if s.count('.') > 1:
             # Multiple dots are thousands separators, e.g. 1.500.000 -> 1500000
             s = s.replace('.', '')
-        else:
-            parts = s.split('.')
-            if len(parts[1]) == 3 and len(parts[0]) <= 3:
-                # Likely thousands separator, e.g., 1.500 -> 1500
-                s = s.replace('.', '')
+        # Note: Avoid stripping a single dot for 3 decimals (e.g. 150.000 or 150.250)
+        # to prevent corrupting numbers formatted with 3 decimal places.
+
     s_clean = ''
     has_dot = False
     for c in s:
