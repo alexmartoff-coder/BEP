@@ -164,33 +164,37 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
             name_scores[c_idx] -= 500
             price_scores[c_idx] -= 500
 
-        # Article matches
+        # Explicit price header checks (including currency indicators 'руб', 'руб.', 'рублей', 'рубли', 'рублях', '₽')
+        has_rub = any(kw in col_text for kw in ['руб', 'руб.', 'рублей', 'рубли', 'рублях', '₽'])
+        has_price_kw = any(kw in col_text for kw in ['цена', 'тариф', 'стоимость', 'price', 'cost', 'rate', 'сумма'])
+        has_with_vat = any(kw in col_text for kw in ['с ндс', 'с учетом ндс', 'тариф с ндс', 'цена с ндс', 'вкл ндс', 'сндс'])
+        has_without_vat = any(kw in col_text for kw in ['без ндс', 'безндс', 'б/ндс', 'без учета ндс'])
+
+        if has_rub or has_price_kw or 'ндс' in col_text:
+            if has_with_vat:
+                price_scores[c_idx] += 2000
+            elif has_price_kw or has_rub:
+                if not has_without_vat:
+                    price_scores[c_idx] += 1500
+                else:
+                    price_scores[c_idx] += 1200
+            else:
+                price_scores[c_idx] += 800
+
+        # Article matches (prevent matching price/currency columns as articles)
         if any(kw in col_text for kw in ['код товара', 'код номенклатуры', 'артикул', 'код', 'арт.', 'арт', 'sku', 'article', 'code']):
-            article_scores[c_idx] += 1000
-        elif 'id' in col_text:
+            if not has_rub and not has_price_kw:
+                article_scores[c_idx] += 1000
+        elif 'id' in col_text and not has_rub:
             article_scores[c_idx] += 500
 
-        # Name matches
+        # Name matches (prevent matching price/currency columns as names)
         if any(kw in col_text for kw in ['наименование', 'номенклатура', 'название', 'описание', 'name', 'description', 'item', 'позиция']):
-            if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
+            if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']) and not has_rub:
                 name_scores[c_idx] += 1000
-        elif 'товар' in col_text:
+        elif 'товар' in col_text and not has_rub:
             if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
                 name_scores[c_idx] += 500
-
-        # Price matches - strongly prioritize 'с НДС' over 'без НДС'
-        has_price_kw = any(kw in col_text for kw in ['цена', 'тариф', 'стоимость', 'price', 'cost', 'rate'])
-        has_with_vat = any(kw in col_text for kw in ['с ндс', 'с учетом ндс', 'тариф с ндс', 'цена с ндс', 'вкл ндс', 'сндс'])
-        has_without_vat = 'без ндс' in col_text or 'безндс' in col_text or 'б/ндс' in col_text
-
-        if has_with_vat:
-            price_scores[c_idx] += 1000
-        elif has_price_kw and not has_without_vat:
-            price_scores[c_idx] += 800
-        elif has_price_kw and has_without_vat:
-            price_scores[c_idx] += 700
-        elif 'ндс' in col_text or 'руб' in col_text:
-            price_scores[c_idx] += 300
 
     # 2. Content analysis on remaining rows (capped to max 50 points total to avoid overriding headers)
     start_content_row = header_r_idx + 1 if header_r_idx != -1 else 0

@@ -75,6 +75,20 @@ def test_detect_columns_single_tariff_without_vat():
     assert price_idx == 2  # Must pick 'Тариф без НДС, руб' as the price column
     assert is_kopecks is False
 
+def test_currency_rub_header_detection():
+    from backend.price_parser import detect_columns
+
+    # Table where the price header is simply 'Руб.'
+    rows = [
+        ("Код", "Наименование", "Руб.", "Ед. изм."),
+        ("268974", "Авт. выкл. NM8N-400H 3P 400A", "58670.85", "шт")
+    ]
+    art_idx, name_idx, price_idx, is_kopecks = detect_columns(rows)
+    assert art_idx == 0
+    assert name_idx == 1
+    assert price_idx == 2  # Must identify 'Руб.' as the price column
+    assert is_kopecks is False
+
 def test_chint_image_price_list_structure():
     from backend.price_parser import detect_columns, parse_price_list
     import openpyxl, io
