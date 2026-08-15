@@ -123,11 +123,15 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
 
                     item_series = str(item.get("series") or "").strip().lower()
                     item_type = str(item.get("type") or "").strip().lower()
+                    item_nominal = str(item.get("nominal") or "").strip().lower()
+                    item_art = str(item.get("article") or item.get("mark") or "").strip().lower()
+                    clean_item_art = clean_key(item_art)
                     item_cat = get_device_category(' '.join([str(item.get("name") or ""), item_series, item_type]))
 
                     for cand in candidates:
                         cand_name = str(cand.get("name") or cand.get("Наименование") or "").lower()
                         cand_art = str(cand.get("article") or cand.get("Артикул") or "").lower()
+                        clean_cand_art = clean_key(cand_art)
                         cand_series = str(cand.get("series") or "").lower()
                         cand_cat = get_device_category(cand_name)
 
@@ -137,6 +141,14 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                             score -= 100
                         else:
                             score += 10
+
+                        # Exact article match bonus
+                        if clean_item_art and clean_cand_art and clean_item_art == clean_cand_art:
+                            score += 1000
+
+                        # Nominal rating bonus (e.g. C16, D25, B10)
+                        if item_nominal and (item_nominal in cand_name or item_nominal in cand_art):
+                            score += 20
 
                         if item_series:
                             if item_series in cand_series or item_series in cand_name or item_series in cand_art:
