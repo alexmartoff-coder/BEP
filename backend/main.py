@@ -563,10 +563,14 @@ async def generate_kp(
                     current_digits_match = re.search(r'\b\d+\b', nominal_str)
                     current_val = current_digits_match.group(0) if current_digits_match else ""
             poles_val = str(item.get("poles") or "3P")
+            raw_qty = int(item.get("qty") or 1)
+            logging.getLogger("main").info(f"[Raw Qty] item='{item_name}' raw_qty={raw_qty}")
+            # Clamp unconfirmed vision bulk quantity > 50 to prevent 200+ hallucinated multipliers
+            safe_qty = raw_qty if raw_qty <= 50 else 1
             valid_items.append({
                 "article": str(item.get("mark") or ""),
                 "name": item_name if item_name else (f"Авт. выкл. {poles_val} {current_val}А" if current_val else "Авт. выкл."),
-                "qty": int(item.get("qty") or 1),
+                "qty": safe_qty,
                 "unit": "шт",
                 "poles": poles_val,
                 "current_a": current_val,
@@ -627,6 +631,8 @@ async def generate_kp(
             index_path = "data/pricelists/active_index.json"
             with open(index_path, "w", encoding="utf-8") as index_file:
                 json.dump(index_map, index_file, ensure_ascii=False, indent=2)
+
+            logging.getLogger("main").info(f"[Pricelist Upload] Rebuilt active_index.json with {len(index_map)} keys.")
         else:
             # No pricelists uploaded, load from persistent storage
             active_path = "data/pricelists/active_pricelist.xlsx"
