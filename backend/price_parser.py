@@ -119,10 +119,10 @@ def extract_current_a_from_name(name_str: str) -> Optional[int]:
 
 def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
     """
-    Intelligently and robustly detects the column indices for:
+    Intelligently and robustly detects column indices for:
     - Article (Артикул)
     - Name (Наименование)
-    - Price (Цена/Тариф с НДС)
+    - Price (Тариф с НДС, руб / Цена)
     And detects if the price column lists values in kopecks (is_kopecks).
     Returns a tuple of (col_article_idx, col_name_idx, col_price_idx, is_kopecks).
     """
@@ -133,74 +133,83 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
     if num_cols == 0:
         return 0, 1, 2, False
 
-    article_scores = [0] * num_cols
-    name_scores = [0] * num_cols
-    price_scores = [0] * num_cols
-
-    # 1. Header Row Search
+    # 1. Exact Header Row Search by finding the row containing BOTH "артикул" and "наименование"
     header_r_idx = -1
     for r_idx in range(min(15, len(rows))):
         row = rows[r_idx]
         row_strs = [str(cell).strip().lower() for cell in row if cell is not None]
-        has_art = any(any(kw in s for kw in ['артикул', 'код', 'sku', 'article']) for s in row_strs)
-        has_price = any(any(kw in s for kw in ['цена', 'тариф', 'стоимость', 'price']) for s in row_strs)
-        has_name = any(any(kw in s for kw in ['наимен', 'назван', 'товар', 'описан', 'name', 'item']) for s in row_strs)
-
-        if (has_art and has_price) or (has_name and has_price) or (has_art and has_name):
+        has_art = any('артикул' in s for s in row_strs)
+        has_name = any('наименование' in s for s in row_strs)
+        if has_art and has_name:
             header_r_idx = r_idx
+            logger.info(f"[Detect Columns] Found exact header row at row index {header_r_idx}: {row}")
             break
 
-    # Multi-row combined header scan per column
+    if header_r_idx == -1:
+        # Fallback search if exact pair is not in one row
+        for r_idx in range(min(15, len(rows))):
+            row = rows[r_idx]
+            row_strs = [str(cell).strip().lower() for cell in row if cell is not None]
+            has_art = any(any(kw in s for kw in ['артикул', 'код', 'sku', 'article']) for s in row_strs)
+            has_price = any(any(kw in s for kw in ['цена', 'тариф', 'стоимость', 'price']) for s in row_strs)
+            has_name = any(any(kw in s for kw in ['наимен', 'назван', 'товар', 'описан', 'name', 'item']) for s in row_strs)
+            if (has_art and has_price) or (has_name and has_price) or (has_art and has_name):
+                header_r_idx = r_idx
+                break
+
+    article_scores = [0] * num_cols
+    name_scores = [0] * num_cols
+    price_scores = [0] * num_cols
+
+    # Multi-row combined header scan per column (prioritizing header_r_idx row)
     max_header_rows = min(10, len(rows))
     for c_idx in range(num_cols):
+        cell_header_exact = ""
+        if header_r_idx != -1 and c_idx < len(rows[header_r_idx]) and rows[header_r_idx][c_idx] is not None:
+            cell_header_exact = str(rows[header_r_idx][c_idx]).strip().lower()
+
         col_text = " ".join(
             str(rows[r_idx][c_idx]).strip().lower()
             for r_idx in range(max_header_rows)
             if c_idx < len(rows[r_idx]) and rows[r_idx][c_idx] is not None
         )
-        if not col_text:
+        if not col_text and not cell_header_exact:
             continue
 
-        # Explicitly blacklist and heavily penalize metadata/category/collection columns
-        if any(kw in col_text for kw in ['коллекция', 'складской статус', 'группа оборудования', 'категория', 'тип', 'склад', 'ед.изм', 'ед. изм', 'вес', 'масса', 'объем', 'наличие', 'статус', 'бренд', 'группа']):
-            article_scores[c_idx] -= 3000
-            name_scores[c_idx] -= 3000
-            price_scores[c_idx] -= 3000
+        text_to_check = cell_header_exact if cell_header_exact else col_text
 
-        # Explicit price header checks (including currency indicators 'руб', 'руб.', 'рублей', 'рубли', 'рублях', '₽')
-        has_rub = any(kw in col_text for kw in ['руб', 'руб.', 'рублей', 'рубли', 'рублях', '₽'])
-        has_price_kw = any(kw in col_text for kw in ['цена', 'тариф', 'стоимость', 'price', 'cost', 'rate', 'сумма'])
-        has_with_vat = any(kw in col_text for kw in ['с ндс', 'с учетом ндс', 'тариф с ндс', 'цена с ндс', 'вкл ндс', 'сндс'])
-        has_without_vat = any(kw in col_text for kw in ['без ндс', 'безндс', 'б/ндс', 'без учета ндс'])
+        # Blacklisted columns: NEVER select as article or price
+        if any(kw in text_to_check for kw in ['коллекция', 'складской', 'склад', 'группа', 'серия', 'вес', 'объём', 'объем', 'категория', 'тип', 'ед.', 'ед.изм', 'ед. изм', 'аналог']):
+            article_scores[c_idx] -= 10000
+            name_scores[c_idx] -= 10000
+            price_scores[c_idx] -= 10000
 
-        if has_rub or has_price_kw or 'ндс' in col_text:
-            if has_with_vat:
-                price_scores[c_idx] += 5000
-            elif has_price_kw or has_rub:
-                if not has_without_vat:
-                    price_scores[c_idx] += 3000
-                else:
-                    price_scores[c_idx] += 2000
-            else:
-                price_scores[c_idx] += 1000
+        # Exact Article matching: contains "артикул" and NOT "аналог"
+        if 'артикул' in text_to_check and 'аналог' not in text_to_check:
+            article_scores[c_idx] += 10000
+        elif any(kw in text_to_check for kw in ['код товара', 'код номенклатуры', 'код']) and not any(kw in text_to_check for kw in ['руб', 'цена', 'тариф', 'аналог']):
+            article_scores[c_idx] += 5000
 
-        # Article matches (strict preference for 'артикул' or 'код')
-        if any(kw in col_text for kw in ['артикул', 'код товара', 'код номенклатуры', 'код', 'арт.', 'арт', 'sku', 'article', 'code']):
-            if not has_rub and not has_price_kw:
-                if 'артикул' in col_text:
-                    article_scores[c_idx] += 4000
-                else:
-                    article_scores[c_idx] += 3000
-        elif 'id' in col_text and not has_rub:
-            article_scores[c_idx] += 500
+        # Exact Name matching: contains "наименование"
+        if 'наименование' in text_to_check and not any(kw in text_to_check for kw in ['код', 'артикул', 'руб', 'цена', 'тариф']):
+            name_scores[c_idx] += 10000
+        elif any(kw in text_to_check for kw in ['номенклатура', 'название', 'описание']) and not any(kw in text_to_check for kw in ['код', 'артикул', 'руб']):
+            name_scores[c_idx] += 5000
 
-        # Name matches (prevent matching price/currency columns as names)
-        if any(kw in col_text for kw in ['наименование', 'номенклатура', 'название', 'описание', 'name', 'description', 'item', 'позиция']):
-            if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']) and not has_rub:
-                name_scores[c_idx] += 1000
-        elif 'товар' in col_text and not has_rub:
-            if not any(kw in col_text for kw in ['код', 'артикул', 'арт', 'sku', 'article']):
-                name_scores[c_idx] += 500
+        # Strict Price matching hierarchy:
+        # 1) "тариф с ндс"
+        # 2) "цена с ндс"
+        # 3) "тариф" + "ндс"
+        if 'тариф с ндс' in text_to_check:
+            price_scores[c_idx] += 10000
+        elif 'цена с ндс' in text_to_check:
+            price_scores[c_idx] += 8000
+        elif 'тариф' in text_to_check and 'ндс' in text_to_check and 'без' not in text_to_check:
+            price_scores[c_idx] += 7000
+        elif any(kw in text_to_check for kw in ['цена', 'тариф', 'стоимость', 'руб', '₽']) and 'без ндс' not in text_to_check:
+            price_scores[c_idx] += 3000
+        elif 'тариф без ндс' in text_to_check or 'цена без ндс' in text_to_check:
+            price_scores[c_idx] += 1500
 
     # 2. Content analysis on remaining rows (capped to max 50 points total to avoid overriding headers)
     start_content_row = header_r_idx + 1 if header_r_idx != -1 else 0
@@ -322,12 +331,12 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         price_str = str(price_val).strip() if price_val is not None else ""
         article_str = str(art_val).strip() if art_val is not None else ""
 
-        # Validation rule 1: If article is non-numeric/text like "Промышленная", clear article
+        # Validation rule 1: Verify article is not pure non-numeric category text (e.g. "Промышленная")
         if article_str and not re.search(r'\d', article_str):
-            logger.error(f"[Price Validation Error] Article '{article_str}' is non-numeric/text (e.g., category name). Clearing article.")
+            logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
             article_str = ""
 
-        # Validation rule 2: Check if price equals article code
+        # Validation rule 2: Check if price equals article code (price == article)
         if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str) or (price > 0 and str(int(price)) == article_str)):
             logger.error(f"[Price Validation Error] Parsed price ({price}) equals article code ({article_str}). Setting price to 0.0.")
             price = 0.0
@@ -379,12 +388,12 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         name_str = str(name_val).strip()
         article_str = str(art_val).strip() if art_val is not None else ""
 
-        # Validation rule 1: If article is non-numeric/text like "Промышленная", clear article
+        # Validation rule 1: Verify article is not pure non-numeric category text (e.g. "Промышленная")
         if article_str and not re.search(r'\d', article_str):
-            logger.error(f"[Price Validation Error] Article '{article_str}' is non-numeric/text (e.g., category name). Clearing article.")
+            logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
             article_str = ""
 
-        # Validation rule 2: Check if price equals article code
+        # Validation rule 2: Check if price equals article code (price == article)
         if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str) or (price > 0 and str(int(price)) == article_str)):
             logger.error(f"[Price Validation Error] Parsed price ({price}) equals article code ({article_str}). Setting price to 0.0.")
             price = 0.0
@@ -469,12 +478,12 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
         price_str = str(price_val).strip() if price_val is not None else ""
         article_str = str(art_val).strip() if art_val is not None else ""
 
-        # Validation rule 1: If article is non-numeric/text like "Промышленная", clear article
+        # Validation rule 1: Verify article is not pure non-numeric category text (e.g. "Промышленная")
         if article_str and not re.search(r'\d', article_str):
-            logger.error(f"[Price Validation Error] Article '{article_str}' is non-numeric/text (e.g., category name). Clearing article.")
+            logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
             article_str = ""
 
-        # Validation rule 2: Check if price equals article code
+        # Validation rule 2: Check if price equals article code (price == article)
         if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str) or (price > 0 and str(int(price)) == article_str)):
             logger.error(f"[Price Validation Error] Parsed price ({price}) equals article code ({article_str}). Setting price to 0.0.")
             price = 0.0
