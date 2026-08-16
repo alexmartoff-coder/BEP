@@ -161,11 +161,11 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
         if not col_text:
             continue
 
-        # Penalize non-essential category / metadata columns so they don't override articles
-        if any(kw in col_text for kw in ['тип', 'склад', 'ед.изм', 'ед. изм', 'вес', 'масса', 'объем', 'наличие', 'статус', 'бренд', 'группа', 'категория']):
-            article_scores[c_idx] -= 500
-            name_scores[c_idx] -= 500
-            price_scores[c_idx] -= 500
+        # Explicitly blacklist and heavily penalize metadata/category/collection columns
+        if any(kw in col_text for kw in ['коллекция', 'складской статус', 'группа оборудования', 'категория', 'тип', 'склад', 'ед.изм', 'ед. изм', 'вес', 'масса', 'объем', 'наличие', 'статус', 'бренд', 'группа']):
+            article_scores[c_idx] -= 3000
+            name_scores[c_idx] -= 3000
+            price_scores[c_idx] -= 3000
 
         # Explicit price header checks (including currency indicators 'руб', 'руб.', 'рублей', 'рубли', 'рублях', '₽')
         has_rub = any(kw in col_text for kw in ['руб', 'руб.', 'рублей', 'рубли', 'рублях', '₽'])
@@ -175,19 +175,22 @@ def detect_columns(rows: List[Tuple[Any, ...]]) -> Tuple[int, int, int, bool]:
 
         if has_rub or has_price_kw or 'ндс' in col_text:
             if has_with_vat:
-                price_scores[c_idx] += 2000
+                price_scores[c_idx] += 5000
             elif has_price_kw or has_rub:
                 if not has_without_vat:
-                    price_scores[c_idx] += 1500
+                    price_scores[c_idx] += 3000
                 else:
-                    price_scores[c_idx] += 1200
+                    price_scores[c_idx] += 2000
             else:
-                price_scores[c_idx] += 800
+                price_scores[c_idx] += 1000
 
-        # Article matches (prevent matching price/currency columns as articles)
-        if any(kw in col_text for kw in ['код товара', 'код номенклатуры', 'артикул', 'код', 'арт.', 'арт', 'sku', 'article', 'code']):
+        # Article matches (strict preference for 'артикул' or 'код')
+        if any(kw in col_text for kw in ['артикул', 'код товара', 'код номенклатуры', 'код', 'арт.', 'арт', 'sku', 'article', 'code']):
             if not has_rub and not has_price_kw:
-                article_scores[c_idx] += 1000
+                if 'артикул' in col_text:
+                    article_scores[c_idx] += 4000
+                else:
+                    article_scores[c_idx] += 3000
         elif 'id' in col_text and not has_rub:
             article_scores[c_idx] += 500
 
@@ -319,13 +322,18 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
         price_str = str(price_val).strip() if price_val is not None else ""
         article_str = str(art_val).strip() if art_val is not None else ""
 
-        # Check if price equals article (this is an error)
-        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str)):
-            logger.warning(f"[Price Bug] Error: Parsed price equals article code ({price_str}). Setting price to 0.0.")
+        # Validation rule 1: If article is non-numeric/text like "Промышленная", clear article
+        if article_str and not re.search(r'\d', article_str):
+            logger.error(f"[Price Validation Error] Article '{article_str}' is non-numeric/text (e.g., category name). Clearing article.")
+            article_str = ""
+
+        # Validation rule 2: Check if price equals article code
+        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str) or (price > 0 and str(int(price)) == article_str)):
+            logger.error(f"[Price Validation Error] Parsed price ({price}) equals article code ({article_str}). Setting price to 0.0.")
             price = 0.0
 
-        if art_val and price > 0.0:
-            price_map[clean_key(art_val)] = price
+        if article_str and price > 0.0:
+            price_map[clean_key(article_str)] = price
         if name_val and price > 0.0:
             price_map[clean_key(name_val)] = price
 
@@ -358,6 +366,10 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         if not name_val:
             continue
 
+        # Skip header row if name_val matches column title
+        if str(name_val).strip().lower() in ["наименование", "наименование номенклатуры", "название", "номенклатура"]:
+            continue
+
         # Parse price with robust float parser
         price = parse_robust_float(price_val)
         if is_kopecks:
@@ -367,9 +379,14 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
         name_str = str(name_val).strip()
         article_str = str(art_val).strip() if art_val is not None else ""
 
-        # Check if price equals article (this is an error)
-        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str)):
-            logger.warning(f"[Price Bug] Error: Parsed price equals article code ({price_str}). Setting price to 0.0.")
+        # Validation rule 1: If article is non-numeric/text like "Промышленная", clear article
+        if article_str and not re.search(r'\d', article_str):
+            logger.error(f"[Price Validation Error] Article '{article_str}' is non-numeric/text (e.g., category name). Clearing article.")
+            article_str = ""
+
+        # Validation rule 2: Check if price equals article code
+        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str) or (price > 0 and str(int(price)) == article_str)):
+            logger.error(f"[Price Validation Error] Parsed price ({price}) equals article code ({article_str}). Setting price to 0.0.")
             price = 0.0
 
         # 1. Extract poles
@@ -441,6 +458,9 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
         if not name_val:
             continue
 
+        if name_val and str(name_val).strip().lower() in ["наименование", "наименование номенклатуры", "название", "номенклатура"]:
+            continue
+
         # Parse price with robust float parser
         price = parse_robust_float(price_val)
         if is_kopecks:
@@ -449,9 +469,14 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
         price_str = str(price_val).strip() if price_val is not None else ""
         article_str = str(art_val).strip() if art_val is not None else ""
 
-        # Check if price equals article (this is an error)
-        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str)):
-            logger.warning(f"[Price Bug] Error: Parsed price equals article code ({price_str}). Setting price to 0.0.")
+        # Validation rule 1: If article is non-numeric/text like "Промышленная", clear article
+        if article_str and not re.search(r'\d', article_str):
+            logger.error(f"[Price Validation Error] Article '{article_str}' is non-numeric/text (e.g., category name). Clearing article.")
+            article_str = ""
+
+        # Validation rule 2: Check if price equals article code
+        if article_str and (price_str == article_str or clean_key(article_str) == clean_key(price_str) or (price > 0 and str(int(price)) == article_str)):
+            logger.error(f"[Price Validation Error] Parsed price ({price}) equals article code ({article_str}). Setting price to 0.0.")
             price = 0.0
 
         raw_list.append({
