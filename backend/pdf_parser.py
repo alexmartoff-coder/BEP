@@ -91,37 +91,46 @@ def is_trash_item(item_name: str, nominal: str = "") -> bool:
     return False
 
 def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
-    """
+    r"""
     Custom text-fallback parser for electrical diagrams.
-    Scans the entire text for all individual occurrences of amperage ratings and poles,
-    pairing them intelligently (by proximity or positionally if in parallel lists),
-    and groups identical items. Ignores 504A if 630A is present.
+    1. Finds sequence of amperage ratings (\d+)\s*А
+    2. Finds sequence of poles ([1-4])\s*P
+    3. Pairs by sequence position (i-th current <-> i-th poles)
+    4. Groups identical (current_a + poles) -> qty
+    5. Handles input breaker (e.g. 630A 3P); ignores 504A setting trip if 630A is present or "уст"/"ввод" is near.
+    6. Ignores junk: Сортер, Резерв, адреса, мм, ΔU, pure QF labels.
+    Logs: [Fallback] groups: 3P_125=8, 1P_63=13, ...
     """
     if not text:
         return []
 
     lines = text.split("\n")
 
-    # Check if 630A is present anywhere in the text to avoid counting 504A separately
+    # Check if 630A is present anywhere in the text to avoid counting 504A trip setting separately
     has_630 = any(re.search(r'\b630\s*(?:А|A)\b', line, re.IGNORECASE) for line in lines)
 
     nominals = []
     poles = []
 
     for line_idx, line in enumerate(lines):
-        # We don't filter out whole lines if we need sequences across lines,
-        # but let's clean known annotations/trash items
         line_clean = line.strip()
         if not line_clean:
             continue
 
+        # Ignore lines containing pure junk keywords
+        line_lower = line_clean.lower()
+        if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина']):
+            continue
+
+        # Ignore trip setting values near "уст" or "уставка" (e.g. 504A setting for 630A breaker)
+        if 'уст' in line_lower:
+            line_clean = re.sub(r'\b\d+\s*(?:А|A)\b', '', line_clean, flags=re.IGNORECASE)
+
         # Clean line from kA/кА/мм/etc. to avoid confusing rating extraction
         line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
         line_clean = re.sub(r'\b\d+\s*мм\b', '', line_clean, flags=re.IGNORECASE)
-        line_clean = re.sub(r'\bNM8[N,S]-\d+[A-Z]?\b', '', line_clean, flags=re.IGNORECASE)
-        line_clean = re.sub(r'\bNB[2,8]-\d+[A-Z]?\b', '', line_clean, flags=re.IGNORECASE)
 
-        # Find all nominal current ratings (excluding 504 if 630 is present)
+        # Find nominal current ratings (\d+)\s*А
         for m in re.finditer(r'\b(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE):
             val = int(m.group(1))
             if val == 504 and has_630:
@@ -130,22 +139,20 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
                 "val": val,
                 "line": line_idx,
                 "start": m.start(),
-                "end": m.end(),
                 "paired": False
             })
 
-        # Find all poles
+        # Find poles ([1-4])\s*P
         for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE):
             p_val = f"{m.group(1)}P"
             poles.append({
                 "val": p_val,
                 "line": line_idx,
                 "start": m.start(),
-                "end": m.end(),
                 "paired": False
             })
 
-    # Sort nominals and poles by document order
+    # Sort in sequence/reading order
     nominals.sort(key=lambda x: (x["line"], x["start"]))
     poles.sort(key=lambda x: (x["line"], x["start"]))
 
@@ -159,7 +166,7 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
             best_pole["paired"] = True
             nom["poles_val"] = best_pole["val"]
 
-    # Pass 2: Positional alignment of remaining unpaired parallel sequences
+    # Pass 2: Sequence index pairing (i-th current <-> i-th poles) for parallel rows
     unpaired_noms = [nom for nom in nominals if not nom["paired"]]
     unpaired_pols = [p for p in poles if not p["paired"]]
 
@@ -170,7 +177,7 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         pol["paired"] = True
         nom["poles_val"] = pol["val"]
 
-    # Heuristics for remaining unpaired nominals (e.g. input breakers or extra ratings)
+    # Default heuristic for remaining unpaired ratings (e.g. input breakers like 630A or 125A)
     for nom in nominals:
         if "poles_val" not in nom:
             val = nom["val"]
@@ -186,6 +193,10 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         c_val = str(nom["val"])
         key = (p_val, c_val)
         grouped[key] = grouped.get(key, 0) + 1
+
+    # Formatted log string as requested: [Fallback] groups: 3P_125=8, 1P_63=13, 1P_16=10, 3P_630=1
+    log_parts = [f"{p}_{c}={q}" for (p, c), q in grouped.items()]
+    logger.info(f"[Fallback] groups: {', '.join(log_parts)}")
 
     items = []
     for (poles, current_a), qty in grouped.items():
@@ -231,23 +242,18 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[st
             except Exception as e:
                 logger.warning(f"Failed to delete temp file {tmp_path}: {e}")
 
-    # Log Vision response status
-    if vision_items:
-        logger.info(f"[Vision] Vision N items: {len(vision_items)}")
-    else:
-        logger.info("[Vision] Vision empty")
-
     source_items = []
     is_vision = False
 
     # 2. Check if Vision successfully returned elements
     if vision_items:
+        logger.info(f"[Vision] items={len(vision_items)}")
         source_items = vision_items
         is_vision = True
     else:
-        # Fallback to custom text-fallback scheme parser
+        logger.info("[Vision] empty/429 -> fallback")
         fallback_items = text_fallback_scheme_parser(extracted_text)
-        logger.info(f"[Vision] text-fallback N items: {len(fallback_items)}")
+        logger.info(f"[Fallback] N items: {len(fallback_items)}")
         source_items = fallback_items
 
     # 3. Apply strict trash filter and normalization

@@ -211,21 +211,26 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
                 is_fallback_trigger = True
 
             if is_fallback_trigger:
-                logger.warning(f"[Vision] Model {primary_model} failed (404/429). Attempting fallback model {fallback_model}...")
-                response = await asyncio.to_thread(
-                    client.chat.completions.create,
-                    model=fallback_model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": content_payload
-                        }
-                    ],
-                    temperature=0.1,
-                    response_format={"type": "json_object"}
-                )
+                logger.warning(f"[Vision] 429/404 on model {primary_model}: {e}. Trying fallback model {fallback_model}...")
+                try:
+                    response = await asyncio.to_thread(
+                        client.chat.completions.create,
+                        model=fallback_model,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": content_payload
+                            }
+                        ],
+                        temperature=0.1,
+                        response_format={"type": "json_object"}
+                    )
+                except Exception as fallback_err:
+                    logger.warning(f"[Vision] 429/empty response on fallback model {fallback_model}: {fallback_err}. Invoking text-fallback...")
+                    return []
             else:
-                raise e
+                logger.warning(f"[Vision] Vision API call failed: {e}. Invoking text-fallback...")
+                return []
 
         if not response or not response.choices or not response.choices[0].message.content:
             logger.warning("[Vision] OpenRouter API returned an empty response.")
