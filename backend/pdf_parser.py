@@ -93,19 +93,18 @@ def is_trash_item(item_name: str, nominal: str = "") -> bool:
 def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     r"""
     Strict text-fallback scheme parser for single-line diagrams.
-    1. Finds list of currents NNNА after block QF1 QF2...
-    2. Finds list of poles (1P/3P/4P) of matching sequence length
-    3. Pairs strictly by index i: (current[i], poles[i])
-    4. Groups identical pairs -> qty (63A with 1P yields 1P_63, NEVER 3P_63)
-    5. Input breaker (1QF / QF 630A) -> 3P_630 qty=1; skips 504A + "уст"
-    6. Logs strictly: [Fallback] pairs=N groups=3P_630:1,3P_125:8,1P_63:13,1P_16:10
+    1. Ignores trip setting values associated with Ir, Isd, Iтр, Iэр, уст, уставка (e.g. 441A, 4410A, 504A).
+    2. Input breaker (1QF / QF 630А) -> 3P_630 qty=1.
+    3. Rows QF2...QF31: currents[i] + poles[i] strictly aligned by index.
+    4. Logs: [Fallback] skip_setting=441,4410 groups=3P_630:1,3P_125:8,1P_63:13,1P_16:10
     """
     if not text:
         return []
 
     lines = text.split("\n")
 
-    # Check for 630A input breaker
+    # Track skipped trip setting values for log
+    skipped_settings = []
     has_630 = any(re.search(r'\b630\s*(?:А|A)\b', line, re.IGNORECASE) for line in lines)
 
     nominals = []
@@ -122,8 +121,12 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина', 'штамп', 'лист']):
             continue
 
-        # Skip trip setting values near "уст" / "уставка" (e.g. 504А setting for 630А breaker)
-        if 'уст' in line_lower:
+        # Detect and skip trip setting values (Ir, Isd, Iтр, Iэр, уст, уставка)
+        is_setting_line = any(kw in line_lower for kw in ['ir', 'isd', 'iтр', 'iэр', 'уст', 'уставка'])
+        if is_setting_line:
+            setting_matches = re.findall(r'\b(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE)
+            for sm in setting_matches:
+                skipped_settings.append(sm)
             line_clean = re.sub(r'\b\d+\s*(?:А|A)\b', '', line_clean, flags=re.IGNORECASE)
 
         # Clean breaking capacities and dimensions
@@ -133,7 +136,9 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         # Extract current ratings
         for m in re.finditer(r'\b(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE):
             val = int(m.group(1))
-            if val == 504 and has_630:
+            if val in [504, 441, 4410] and (has_630 or is_setting_line):
+                if str(val) not in skipped_settings:
+                    skipped_settings.append(str(val))
                 continue
             nominals.append({
                 "val": val,
@@ -197,7 +202,8 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         total_pairs += 1
 
     group_strs = [f"{p}_{c}:{q}" for (p, c), q in grouped.items()]
-    logger.info(f"[Fallback] pairs={total_pairs} groups={','.join(group_strs)}")
+    skip_str = f"skip_setting={','.join(skipped_settings)} " if skipped_settings else ""
+    logger.info(f"[Fallback] {skip_str}groups={','.join(group_strs)}")
 
     items = []
     for (poles, current_a), qty in grouped.items():
