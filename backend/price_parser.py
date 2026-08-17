@@ -333,7 +333,8 @@ def parse_price_list(file_bytes: bytes, price_map: Optional[Dict[str, float]] = 
 
         # Validation rule 1: Verify article is not pure non-numeric category text (e.g. "Промышленная")
         if article_str and not re.search(r'\d', article_str):
-            logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
+            if article_str.lower() != "артикул":
+                logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
             article_str = ""
 
         # Validation rule 2: Check if price equals article code (price == article)
@@ -390,7 +391,8 @@ def parse_excel_to_unified(file_bytes: bytes) -> List[Dict[str, Any]]:
 
         # Validation rule 1: Verify article is not pure non-numeric category text (e.g. "Промышленная")
         if article_str and not re.search(r'\d', article_str):
-            logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
+            if article_str.lower() != "артикул":
+                logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
             article_str = ""
 
         # Validation rule 2: Check if price equals article code (price == article)
@@ -480,7 +482,8 @@ def parse_price_list_raw(file_bytes: bytes) -> List[Dict[str, Any]]:
 
         # Validation rule 1: Verify article is not pure non-numeric category text (e.g. "Промышленная")
         if article_str and not re.search(r'\d', article_str):
-            logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
+            if article_str.lower() != "артикул":
+                logger.error(f"[Price Validation Error] Article '{article_str}' is pure text without digits. Clearing article.")
             article_str = ""
 
         # Validation rule 2: Check if price equals article code (price == article)
