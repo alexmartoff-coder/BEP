@@ -130,6 +130,7 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
 
                     item_name_lower = name.lower()
                     has_explicit_fuse = 'предохранител' in item_name_lower or 'плавкая вставка' in item_name_lower
+                    is_breaker_req = any(kw in item_name_lower for kw in ['qf', 'авт', 'автомат', 'breaker']) or item_cat == 'breaker'
 
                     for cand in candidates:
                         cand_name = str(cand.get("name") or cand.get("Наименование") or "").lower()
@@ -139,10 +140,20 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                         cand_cat = get_device_category(cand_name)
 
                         score = 0
+
+                        # Strict breaker requirement checks
+                        if is_breaker_req:
+                            is_disconn = any(kw in cand_name for kw in ['выключатель нагрузки', 'разъединитель', 'nh4', 'nh40', 'nh45'])
+                            if is_disconn:
+                                score -= 2000
+                            has_breaker_kw = 'авт. выкл' in cand_name or 'автоматический' in cand_name or any(s in cand_name for s in ['nb', 'nm8', 'nxb', 'nb1', 'nb2', 'nxm', 'nm1', 'dz158'])
+                            if not has_breaker_kw:
+                                score -= 1000
+
                         # Disallow matching circuit breaker positions to fuses/RT36/melt inserts unless explicitly requested
                         is_fuse_cand = any(kw in cand_name for kw in ['предохранитель', 'плавкая вставка', 'rt36', 'ппн', 'fuse'])
                         if is_fuse_cand and not has_explicit_fuse:
-                            score -= 500
+                            score -= 1000
 
                         # Do not match 1P single-phase current rating positions to 3P or N-pole breakers (e.g. 1P+N, 3P+N) if 1P is requested
                         if poles == '1P':

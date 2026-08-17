@@ -177,6 +177,7 @@ class SmartMatcher:
         candidates = []
         det_name_lower = det_name.lower()
         has_explicit_fuse = 'предохранител' in det_name_lower or 'плавкая вставка' in det_name_lower
+        is_breaker_req = any(kw in det_name_lower for kw in ['qf', 'авт', 'автомат', 'breaker']) or det_cat == 'breaker'
 
         candidates = []
         for item in self.price_list:
@@ -185,6 +186,19 @@ class SmartMatcher:
                 continue
 
             item_name_lower = item_name.lower()
+
+            # If circuit breaker requested:
+            # REJECT load disconnectors/switches (выключатель нагрузки, разъединитель, NH4, NH40, NH45) and fuses (предохранител, RT36)
+            if is_breaker_req:
+                is_disconnector = any(kw in item_name_lower for kw in ['выключатель нагрузки', 'разъединитель', 'nh4', 'nh40', 'nh45'])
+                if is_disconnector:
+                    continue
+                is_fuse_item = any(kw in item_name_lower for kw in ['предохранитель', 'плавкая вставка', 'rt36', 'ппн', 'fuse'])
+                if is_fuse_item and not has_explicit_fuse:
+                    continue
+                has_breaker_kw = 'авт. выкл' in item_name_lower or 'автоматический' in item_name_lower or any(s in item_name_lower for s in ['nb', 'nm8', 'nxb', 'nb1', 'nb2', 'nxm', 'nm1', 'dz158'])
+                if not has_breaker_kw:
+                    continue
 
             # Disallow matching circuit breaker positions to fuses/RT36/melt inserts unless explicitly requested
             is_fuse_item = any(kw in item_name_lower for kw in ['предохранитель', 'плавкая вставка', 'rt36', 'ппн', 'fuse'])
