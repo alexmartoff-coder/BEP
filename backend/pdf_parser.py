@@ -208,13 +208,14 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     items = []
     for (poles, current_a), qty in grouped.items():
         name_norm = f"Авт. выкл. {poles} {current_a}А"
+        safe_qty = min(qty, 40)
         items.append({
             "mark": None,
             "series": None,
             "nominal": f"{current_a}A",
             "poles": poles,
             "current_a": current_a,
-            "qty": qty,
+            "qty": safe_qty,
             "name": name_norm,
             "unit": "шт"
         })
