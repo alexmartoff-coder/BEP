@@ -144,9 +144,12 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                         if is_fuse_cand and not has_explicit_fuse:
                             score -= 500
 
-                        # Do not match 1P single-phase current rating positions to 3P power circuit breakers
-                        if poles == '1P' and ('3p' in cand_name or '3пол' in cand_name):
-                            score -= 500
+                        # Do not match 1P single-phase current rating positions to 3P or N-pole breakers (e.g. 1P+N, 3P+N) if 1P is requested
+                        if poles == '1P':
+                            if '3p' in cand_name or '3пол' in cand_name:
+                                score -= 500
+                            if '1p+n' in cand_name or '3p+n' in cand_name or '+n' in cand_name:
+                                score -= 50
 
                         # Check category conflict (e.g. breaker vs VFD)
                         if item_cat != 'unknown' and cand_cat != 'unknown' and item_cat != cand_cat:

@@ -195,9 +195,13 @@ class SmartMatcher:
             cand_cat = get_device_category(item_name)
             if det_cat != 'unknown' and cand_cat != 'unknown' and det_cat != cand_cat:
                 continue
-            # Do not match 1P single-phase current rating positions to 3P power circuit breakers
-            if poles_norm == '1P' and ('3P' in item_name.upper() or '3ПОЛ' in item_name.upper()):
-                continue
+            # Do not match 1P single-phase current rating positions to 3P or 1P+N / 3P+N breakers if 1P is requested
+            if poles_norm == '1P':
+                if '3P' in item_name.upper() or '3ПОЛ' in item_name.upper():
+                    continue
+                # Avoid matching 1P+N or +N specific pole variants when strict 1P is requested
+                if '1P+N' in item_name.upper() or '3P+N' in item_name.upper() or '+N' in item_name.upper():
+                    continue
 
             # 1. Извлекаем номинал позиции прайса
             item_amp = self._extract_amperage(item_name)
