@@ -292,5 +292,8 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
 
     except Exception as e:
         logger.error(f"[Vision] OpenRouter Vision API parsing failed: {e}", exc_info=True)
-        # Log error and return empty list to not break the pipeline
+        # Purge stale cache for this hash if an error occurred
+        if 'file_hash' in locals() and file_hash in _memory_cache:
+            del _memory_cache[file_hash]
+            save_cache()
         return []

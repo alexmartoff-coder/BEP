@@ -175,14 +175,28 @@ class SmartMatcher:
         det_cat = get_device_category(' '.join([det_name, dt, series, det_art]))
 
         candidates = []
+        det_name_lower = det_name.lower()
+        has_explicit_fuse = 'предохранител' in det_name_lower or 'плавкая вставка' in det_name_lower
+
+        candidates = []
         for item in self.price_list:
             item_name = str(item.get('Наименование') or item.get('name') or '')
             if not item_name:
                 continue
 
+            item_name_lower = item_name.lower()
+
+            # Disallow matching circuit breaker positions to fuses/RT36/melt inserts unless explicitly requested
+            is_fuse_item = any(kw in item_name_lower for kw in ['предохранитель', 'плавкая вставка', 'rt36', 'ппн', 'fuse'])
+            if is_fuse_item and not has_explicit_fuse:
+                continue
+
             # Check category conflict (e.g. breaker vs VFD)
             cand_cat = get_device_category(item_name)
             if det_cat != 'unknown' and cand_cat != 'unknown' and det_cat != cand_cat:
+                continue
+            # Do not match 1P single-phase current rating positions to 3P power circuit breakers
+            if poles_norm == '1P' and ('3P' in item_name.upper() or '3ПОЛ' in item_name.upper()):
                 continue
 
             # 1. Извлекаем номинал позиции прайса
