@@ -128,6 +128,9 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                     clean_item_art = clean_key(item_art)
                     item_cat = get_device_category(' '.join([str(item.get("name") or ""), item_series, item_type]))
 
+                    item_name_lower = name.lower()
+                    has_explicit_fuse = 'предохранител' in item_name_lower or 'плавкая вставка' in item_name_lower
+
                     for cand in candidates:
                         cand_name = str(cand.get("name") or cand.get("Наименование") or "").lower()
                         cand_art = str(cand.get("article") or cand.get("Артикул") or "").lower()
@@ -136,6 +139,15 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
                         cand_cat = get_device_category(cand_name)
 
                         score = 0
+                        # Disallow matching circuit breaker positions to fuses/RT36/melt inserts unless explicitly requested
+                        is_fuse_cand = any(kw in cand_name for kw in ['предохранитель', 'плавкая вставка', 'rt36', 'ппн', 'fuse'])
+                        if is_fuse_cand and not has_explicit_fuse:
+                            score -= 500
+
+                        # Do not match 1P single-phase current rating positions to 3P power circuit breakers
+                        if poles == '1P' and ('3p' in cand_name or '3пол' in cand_name):
+                            score -= 500
+
                         # Check category conflict (e.g. breaker vs VFD)
                         if item_cat != 'unknown' and cand_cat != 'unknown' and item_cat != cand_cat:
                             score -= 100

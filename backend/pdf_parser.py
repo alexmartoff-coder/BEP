@@ -92,26 +92,24 @@ def is_trash_item(item_name: str, nominal: str = "") -> bool:
 
 def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     r"""
-    Enhanced text-fallback scheme parser for single-line diagrams.
-    1. Finds ALL current rating sequences (\d+)\s*А (e.g. 630A, 400A, 100A, 125A, 63A, 16A).
-    2. Pairs each rating with closest poles (1P/3P/4P) within the same block or sequence index.
-    3. Retains all distinct rating groups (does not collapse multiple rows into one or auto-replace 100A with 125A).
-    4. Handles input breakers (e.g. 630A 3P x1); ignores 504A trip setting when "уст"/"уставка" is near or 630A is present.
-    5. Ignores junk: Сортер, Резерв, адреса, мм, ΔU, title blocks.
-    6. Ensures QF/QF1 is NOT placed in the article field.
-    Logs: [Fallback] rows_found=N groups=3P_630:1, 3P_400:1, 3P_100:6, 3P_125:3
+    Strict text-fallback scheme parser for single-line diagrams.
+    1. Finds list of currents NNNА after block QF1 QF2...
+    2. Finds list of poles (1P/3P/4P) of matching sequence length
+    3. Pairs strictly by index i: (current[i], poles[i])
+    4. Groups identical pairs -> qty (63A with 1P yields 1P_63, NEVER 3P_63)
+    5. Input breaker (1QF / QF 630A) -> 3P_630 qty=1; skips 504A + "уст"
+    6. Logs strictly: [Fallback] pairs=N groups=3P_630:1,3P_125:8,1P_63:13,1P_16:10
     """
     if not text:
         return []
 
     lines = text.split("\n")
 
-    # Check if 630A input breaker is present anywhere in the document
+    # Check for 630A input breaker
     has_630 = any(re.search(r'\b630\s*(?:А|A)\b', line, re.IGNORECASE) for line in lines)
 
     nominals = []
     poles = []
-    rows_found_count = 0
 
     for line_idx, line in enumerate(lines):
         line_clean = line.strip()
@@ -124,33 +122,27 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина', 'штамп', 'лист']):
             continue
 
-        # Ignore trip settings near "уст" or "уставка" (e.g. 504A setting for 630A breaker)
+        # Skip trip setting values near "уст" / "уставка" (e.g. 504А setting for 630А breaker)
         if 'уст' in line_lower:
             line_clean = re.sub(r'\b\d+\s*(?:А|A)\b', '', line_clean, flags=re.IGNORECASE)
 
-        # Clean line from breaking capacity annotations and dimensions
+        # Clean breaking capacities and dimensions
         line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
         line_clean = re.sub(r'\b\d+\s*мм\b', '', line_clean, flags=re.IGNORECASE)
 
-        # Find nominal current ratings
-        line_noms = []
+        # Extract current ratings
         for m in re.finditer(r'\b(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE):
             val = int(m.group(1))
-            # Ignore 504A if 630A is present as input breaker
             if val == 504 and has_630:
                 continue
-            line_noms.append({
+            nominals.append({
                 "val": val,
                 "line": line_idx,
                 "start": m.start(),
                 "paired": False
             })
 
-        if line_noms:
-            rows_found_count += 1
-            nominals.extend(line_noms)
-
-        # Find poles
+        # Extract poles
         for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE):
             p_val = f"{m.group(1)}P"
             poles.append({
@@ -174,7 +166,7 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
             best_pole["paired"] = True
             nom["poles_val"] = best_pole["val"]
 
-    # Pass 2: Positional alignment for parallel sequences across lines
+    # Pass 2: Strict positional index alignment i for parallel lists (e.g. current row <-> poles row)
     unpaired_noms = [nom for nom in nominals if not nom["paired"]]
     unpaired_pols = [p for p in poles if not p["paired"]]
 
@@ -185,7 +177,7 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         pol["paired"] = True
         nom["poles_val"] = pol["val"]
 
-    # Heuristic for remaining unpaired ratings (input/outgoing breakers)
+    # Fallback heuristic for any remaining unpaired nominals
     for nom in nominals:
         if "poles_val" not in nom:
             val = nom["val"]
@@ -194,17 +186,18 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
             else:
                 nom["poles_val"] = "1P" if val <= 40 else "3P"
 
-    # Group items by (poles, current_a)
+    # Group pairs strictly
     grouped = {}
+    total_pairs = 0
     for nom in nominals:
         p_val = nom["poles_val"]
         c_val = str(nom["val"])
         key = (p_val, c_val)
         grouped[key] = grouped.get(key, 0) + 1
+        total_pairs += 1
 
-    # Formatted log string as requested: [Fallback] rows_found=N groups=3P_630:1, 3P_400:1, 3P_100:6, 3P_125:3
     group_strs = [f"{p}_{c}:{q}" for (p, c), q in grouped.items()]
-    logger.info(f"[Fallback] rows_found={rows_found_count} groups={', '.join(group_strs)}")
+    logger.info(f"[Fallback] pairs={total_pairs} groups={','.join(group_strs)}")
 
     items = []
     for (poles, current_a), qty in grouped.items():
