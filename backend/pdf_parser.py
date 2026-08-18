@@ -136,19 +136,22 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
         line_clean = re.sub(r'\b\d+\s*мм\b', '', line_clean, flags=re.IGNORECASE)
 
-        # Extract current ratings
-        for m in re.finditer(r'\b(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE):
+        KNOWN_AMPS = {6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600}
+
+        # Extract current ratings (catches 630А, 125А, 100А, 63А, 16А, C16, C63, etc.)
+        for m in re.finditer(r'(?:[B-Db-dCсС]|Ir|Isd)?\s*(\d+)\s*(?:А|A)?\b', line_clean, re.IGNORECASE):
             val = int(m.group(1))
             if val in [504, 441, 4410] and (has_630 or is_setting_line):
                 if str(val) not in skipped_settings:
                     skipped_settings.append(str(val))
                 continue
-            nominals.append({
-                "val": val,
-                "line": line_idx,
-                "start": m.start(),
-                "paired": False
-            })
+            if val in KNOWN_AMPS:
+                nominals.append({
+                    "val": val,
+                    "line": line_idx,
+                    "start": m.start(),
+                    "paired": False
+                })
 
         # Extract poles
         for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE):
@@ -236,14 +239,14 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
 async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Parses PDF into structured board groups.
-    If Vision successfully returns items, COMPLETELY ignores the text-based parser
-    and returns only those items in a single board.
-    Otherwise, falls back to text-based parsing with strict junk filtering.
+    Runs Vision API, Geometric parser (PyMuPDF/pdfplumber), and Text Fallback parser.
+    Prioritizes structured geom/text schematic rows over incomplete Vision outputs.
+    Logs execution status for all stages: [Vision], [Geom], [Fallback], [BOM].
     """
-    # Extract text from PDF first (to have it ready for fallback)
+    # 1. Extract text from PDF first
     extracted_text = extract_text_from_pdf(pdf_bytes)
 
-    # 1. First attempt to extract equipment with Vision API
+    # 2. Attempt Vision API extraction
     vision_items = []
     tmp_path = None
     try:
@@ -261,32 +264,48 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[st
             except Exception as e:
                 logger.warning(f"Failed to delete temp file {tmp_path}: {e}")
 
+    # 3. Always run geometric schematic parser
+    from backend.geom_parser import parse_schematic_geom
+    geom_items = parse_schematic_geom(pdf_bytes)
+
+    # 4. Always run text fallback schematic parser if text is present
+    fallback_items = text_fallback_scheme_parser(extracted_text) if extracted_text else []
+
+    # Calculate item totals and group summary strings
+    total_vision = sum(it.get("qty", 1) for it in vision_items)
+    total_geom = sum(it.get("qty", 1) for it in geom_items)
+    total_fallback = sum(it.get("qty", 1) for it in fallback_items)
+
+    geom_strs = [f"{it.get('poles')}_{it.get('current_a')}:{it.get('qty')}" for it in geom_items]
+    fallback_strs = [f"{it.get('poles')}_{it.get('current_a')}:{it.get('qty')}" for it in fallback_items]
+
+    # Decision logic: Give priority to structured schematic rows (>= 5 items or >= 3 groups)
     source_items = []
-    is_vision = False
-
-    # 2. Check if Vision successfully returned elements
-    if vision_items:
-        logger.info(f"[Vision] status=ok items={len(vision_items)}")
-        logger.info("[Geom] used=false qf_cols=0 groups=")
+    if len(geom_items) >= 3 or total_geom >= 5:
+        source_items = geom_items
+        logger.info(f"[Vision] status={'ok' if vision_items else 'empty'} items={len(vision_items)} (overridden by geom)")
+        logger.info(f"[Geom] used=true groups={','.join(geom_strs)}")
         logger.info("[Fallback] used=false groups=")
+    elif len(fallback_items) >= 3 or total_fallback >= 5:
+        source_items = fallback_items
+        logger.info(f"[Vision] status={'ok' if vision_items else 'empty'} items={len(vision_items)} (overridden by fallback)")
+        logger.info(f"[Geom] used=false groups={','.join(geom_strs)}")
+        logger.info(f"[Fallback] used=true groups={','.join(fallback_strs)}")
+    elif vision_items:
         source_items = vision_items
-        is_vision = True
+        logger.info(f"[Vision] status=ok items={len(vision_items)} (used)")
+        logger.info(f"[Geom] used=false groups={','.join(geom_strs)}")
+        logger.info(f"[Fallback] used=false groups={','.join(fallback_strs)}")
+    elif geom_items:
+        source_items = geom_items
+        logger.info(f"[Vision] status=empty items=0")
+        logger.info(f"[Geom] used=true groups={','.join(geom_strs)}")
+        logger.info("[Fallback] used=false groups=")
     else:
-        logger.info("[Vision] status=empty items=0")
-        # Try geometric parser via pdfplumber first
-        from backend.geom_parser import parse_schematic_geom
-        geom_items = parse_schematic_geom(pdf_bytes)
-
-        total_geom_items = sum(it.get("qty", 1) for it in geom_items)
-        geom_strs = [f"{it.get('poles')}_{it.get('current_a')}:{it.get('qty')}" for it in geom_items]
-        if len(geom_items) >= 3 or total_geom_items >= 5:
-            logger.info(f"[Geom] used=true groups={','.join(geom_strs)}")
-            logger.info("[Fallback] used=false groups=")
-            source_items = geom_items
-        else:
-            logger.info(f"[Geom] used=false groups={','.join(geom_strs)}")
-            fallback_items = text_fallback_scheme_parser(extracted_text)
-            source_items = fallback_items
+        source_items = fallback_items
+        logger.info(f"[Vision] status=empty items=0")
+        logger.info(f"[Geom] used=false groups=")
+        logger.info(f"[Fallback] used=true groups={','.join(fallback_strs)}")
 
     # 3. Apply strict trash filter and normalization
     valid_items = []
