@@ -209,15 +209,14 @@ class SmartMatcher:
             cand_cat = get_device_category(item_name)
             if det_cat != 'unknown' and cand_cat != 'unknown' and det_cat != cand_cat:
                 continue
-            # Do not match 1P single-phase current rating positions to 3P or 1P+N / 3P+N breakers if 1P is requested
+            # Do not match 1P single-phase current rating positions to 3P, 3P+N or 1P+N breakers if 1P is requested
             if poles_norm == '1P':
-                if '3P' in item_name.upper() or '3ПОЛ' in item_name.upper():
+                item_upper = item_name.upper()
+                if '3P' in item_upper or '3ПОЛ' in item_upper or '4P' in item_upper or '4ПОЛ' in item_upper:
                     continue
-                # Avoid matching 1P+N or +N specific pole variants when strict 1P is requested
-                if '1P+N' in item_name.upper() or '3P+N' in item_name.upper() or '+N' in item_name.upper():
+                if '1P+N' in item_upper or '3P+N' in item_upper or '+N' in item_upper:
                     continue
-                # Never match 1P items to 3P molded case breaker series (NM8N, NM8S, NXM, NM1) unless item explicitly specifies 1P
-                if any(s in item_name.upper() for s in ['NM8N', 'NM8S', 'NXM', 'NM1']) and '1P' not in item_name.upper() and '1ПОЛ' not in item_name.upper():
+                if any(s in item_upper for s in ['NM8N', 'NM8S', 'NXM', 'NM1']) and '1P' not in item_upper and '1ПОЛ' not in item_upper:
                     continue
 
             # 1. Извлекаем номинал позиции прайса
