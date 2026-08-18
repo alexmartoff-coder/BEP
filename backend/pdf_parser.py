@@ -270,10 +270,19 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[st
         source_items = vision_items
         is_vision = True
     else:
-        logger.info("[Vision] empty/429 -> fallback")
-        fallback_items = text_fallback_scheme_parser(extracted_text)
-        logger.info(f"[Fallback] N items: {len(fallback_items)}")
-        source_items = fallback_items
+        logger.info("[Vision] empty/429 -> hybrid fallback")
+        # Try geometric parser via pdfplumber first
+        from backend.geom_parser import parse_schematic_geom
+        geom_items = parse_schematic_geom(pdf_bytes)
+
+        total_geom_items = sum(it.get("qty", 1) for it in geom_items)
+        if len(geom_items) >= 3 or total_geom_items >= 5:
+            logger.info(f"[Hybrid] Using Geom parser result: {len(geom_items)} groups, {total_geom_items} total items")
+            source_items = geom_items
+        else:
+            fallback_items = text_fallback_scheme_parser(extracted_text)
+            logger.info(f"[Hybrid] Using Regex fallback result: {len(fallback_items)} groups")
+            source_items = fallback_items
 
     # 3. Apply strict trash filter and normalization
     valid_items = []
