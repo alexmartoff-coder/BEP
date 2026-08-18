@@ -515,48 +515,54 @@ async def generate_kp(
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes)
 
-        # Call parse_schematic_geom directly on PDF bytes
+        # 1. Always execute geometric schematic parser
         geom_items = parse_schematic_geom(pdf_bytes)
-        print(f"[Geom] used={bool(geom_items)} n={len(geom_items)}", flush=True)
+        geom_n = len(geom_items)
+        geom_amps = set(it.get("current_a") for it in geom_items if it.get("current_a"))
+        print(f"[Geom] used={bool(geom_items)} n={geom_n}", flush=True)
 
-        total_geom_qty = sum(it.get("qty", 1) for it in geom_items) if geom_items else 0
+        # 2. Always execute text fallback schematic parser
+        fallback_items = text_fallback_scheme_parser(extracted_text) if extracted_text else []
+        fallback_n = len(fallback_items)
 
-        source_items = []
-        source_type = "fallback"
+        # 3. Attempt Vision API
+        import tempfile
+        tmp_path = None
+        vision_items = []
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(pdf_bytes)
+                tmp_path = tmp.name
+            from backend.vision_parser import parse_equipment_from_pdf
+            vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt)
+        except Exception as e:
+            logging.getLogger("main").error(f"[Vision Error] {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
-        # Check if geom parser gave a complete schematic set (groups >= 3 OR total qty >= 5)
-        if geom_items and (len(geom_items) >= 3 or total_geom_qty >= 5):
+        # 4. Selection priority:
+        # - geom if groups >= 3 AND distinct amperages > 1
+        # - otherwise fallback (text_items) if groups >= 3
+        # - otherwise vision
+        if geom_n >= 3 and len(geom_amps) > 1:
+            source_items = geom_items
+            source_type = "geom"
+        elif fallback_n >= 3:
+            source_items = fallback_items
+            source_type = "fallback"
+        elif vision_items:
+            source_items = vision_items
+            source_type = "vision"
+        elif geom_items:
             source_items = geom_items
             source_type = "geom"
         else:
-            # Otherwise attempt Vision API parsing
-            import tempfile
-            tmp_path = None
-            vision_items = []
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(pdf_bytes)
-                    tmp_path = tmp.name
-                from backend.vision_parser import parse_equipment_from_pdf
-                vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt)
-            except Exception as e:
-                logging.getLogger("main").error(f"[Vision Error] {e}")
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
-
-            if vision_items:
-                logging.getLogger("main").info(f"[Vision] items={len(vision_items)}")
-                source_items = vision_items
-                source_type = "vision"
-            else:
-                logging.getLogger("main").info("[Vision] items=empty")
-                fallback_items = text_fallback_scheme_parser(extracted_text)
-                source_items = fallback_items
-                source_type = "fallback"
+            source_items = fallback_items
+            source_type = "fallback"
 
         print(f"[BOM] source={source_type} n={len(source_items)}", flush=True)
 

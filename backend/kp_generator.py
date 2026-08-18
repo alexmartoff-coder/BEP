@@ -88,7 +88,7 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
         board_subtotal = 0.0
 
         for item in board["items"]:
-            qty = item.get("qty", 1)
+            qty = min(int(item.get("qty", 1)), 40)
             unit = item.get("unit", "шт")
             poles = str(item.get("poles") or "").upper().strip()
             current_a = str(item.get("current_a") or "").strip()
