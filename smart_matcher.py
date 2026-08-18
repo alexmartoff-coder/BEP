@@ -216,6 +216,9 @@ class SmartMatcher:
                 # Avoid matching 1P+N or +N specific pole variants when strict 1P is requested
                 if '1P+N' in item_name.upper() or '3P+N' in item_name.upper() or '+N' in item_name.upper():
                     continue
+                # Never match 1P items to 3P molded case breaker series (NM8N, NM8S, NXM, NM1) unless item explicitly specifies 1P
+                if any(s in item_name.upper() for s in ['NM8N', 'NM8S', 'NXM', 'NM1']) and '1P' not in item_name.upper() and '1ПОЛ' not in item_name.upper():
+                    continue
 
             # 1. Извлекаем номинал позиции прайса
             item_amp = self._extract_amperage(item_name)

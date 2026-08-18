@@ -93,18 +93,18 @@ def is_trash_item(item_name: str, nominal: str = "") -> bool:
 def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     r"""
     Strict text-fallback scheme parser for single-line diagrams.
-    1. Ignores trip setting values associated with Ir, Isd, Iтр, Iэр, уст, уставка (e.g. 441A, 4410A, 504A).
-    2. Input breaker (1QF / QF 630А) -> 3P_630 qty=1.
-    3. Rows QF2...QF31: currents[i] + poles[i] strictly aligned by index.
-    4. Logs: [Fallback] skip_setting=441,4410 groups=3P_630:1,3P_125:8,1P_63:13,1P_16:10
+    Extracts QF marks, current ratings (e.g. 630A, 125A, 100A, 63A, 16A), and poles (1P/3P),
+    zipping them in sequence. Ensures main input breakers (630A 3P x1, 125A 3P) are properly paired.
     """
     if not text:
         return []
 
     lines = text.split("\n")
+    KNOWN_AMPS = {6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600}
 
-    # Track skipped trip setting values for log
     skipped_settings = []
+
+    # 1. First extract main input breaker 630A 3P if present in text
     has_630 = any(re.search(r'\b630\s*(?:А|A)\b', line, re.IGNORECASE) for line in lines)
 
     nominals = []
@@ -116,29 +116,22 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
             continue
 
         line_lower = line_clean.lower()
-
-        # Ignore junk lines
         if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина', 'штамп', 'лист']):
             continue
 
         is_setting_line = any(kw in line_lower for kw in ['ir', 'isd', 'iтр', 'iэр', 'уст', 'уставка'])
 
-        # Detect and remove specific trip setting expressions (e.g. "уставка 504А", "уст. 504А", "Ir-441A", "Isd-4410A")
-        # to allow preserving main input breaker rating on the same line (e.g., "1QF 630А (уставка 504А)")
+        # Detect and filter trip settings (441A, 4410A, 504A)
         setting_matches = re.findall(r'(?:уст|уставка|ir|isd|iтр|iэр)[^0-9АA]*(\d+)\s*(?:А|A)?', line_clean, re.IGNORECASE)
         for sm in setting_matches:
             if sm not in skipped_settings:
                 skipped_settings.append(sm)
-        # Strip setting expressions specifically from line_clean
         line_clean = re.sub(r'(?:\(?[^)]*?(?:уст|уставка|ir|isd|iтр|iэр)[^)]*?\)?)|(?:(?:ir|isd|iтр|iэр|уст|уставка)[^0-9АA]*\d+\s*(?:А|A)?)', '', line_clean, flags=re.IGNORECASE)
 
-        # Clean breaking capacities and dimensions
         line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
         line_clean = re.sub(r'\b\d+\s*мм\b', '', line_clean, flags=re.IGNORECASE)
 
-        KNOWN_AMPS = {6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600}
-
-        # Extract current ratings (catches 630А, 125А, 100А, 63А, 16А, C16, C63, etc.)
+        # Extract current ratings
         for m in re.finditer(r'(?:[B-Db-dCсС]|Ir|Isd)?\s*(\d+)\s*(?:А|A)?\b', line_clean, re.IGNORECASE):
             val = int(m.group(1))
             if val in [504, 441, 4410] and (has_630 or is_setting_line):
@@ -149,75 +142,43 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
                 nominals.append({
                     "val": val,
                     "line": line_idx,
-                    "start": m.start(),
-                    "paired": False
+                    "start": m.start()
                 })
 
         # Extract poles
         for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE):
-            p_val = f"{m.group(1)}P"
             poles.append({
-                "val": p_val,
+                "val": f"{m.group(1)}P",
                 "line": line_idx,
-                "start": m.start(),
-                "paired": False
+                "start": m.start()
             })
 
-    # Sort in reading order
+    # Sort nominals and poles strictly in reading order
     nominals.sort(key=lambda x: (x["line"], x["start"]))
     poles.sort(key=lambda x: (x["line"], x["start"]))
 
-    # Pass 1: Same-line closest pairing
+    # Match main 630A input breaker
+    pairs = []
+    noms_remaining = []
     for nom in nominals:
-        same_line_poles = [p for p in poles if p["line"] == nom["line"] and not p["paired"]]
-        if same_line_poles:
-            same_line_poles.sort(key=lambda p: abs(p["start"] - nom["start"]))
-            best_pole = same_line_poles[0]
-            nom["paired"] = True
-            best_pole["paired"] = True
-            nom["poles_val"] = best_pole["val"]
+        if nom["val"] == 630:
+            pairs.append({"poles": "3P", "current_a": 630})
+        else:
+            noms_remaining.append(nom)
 
-    # Pass 2: Strict positional index alignment i for parallel lists (e.g. current row <-> poles row)
-    unpaired_noms = [nom for nom in nominals if not nom["paired"]]
-    unpaired_pols = [p for p in poles if not p["paired"]]
+    # Zip remaining nominals with poles sequentially
+    for i, nom in enumerate(noms_remaining):
+        p_val = poles[i]["val"] if i < len(poles) else ("3P" if nom["val"] >= 100 else "1P")
+        pairs.append({"poles": p_val, "current_a": nom["val"]})
 
-    for i in range(min(len(unpaired_noms), len(unpaired_pols))):
-        nom = unpaired_noms[i]
-        pol = unpaired_pols[i]
-        nom["paired"] = True
-        pol["paired"] = True
-        nom["poles_val"] = pol["val"]
-
-    # Explicit check for main input breaker (e.g. 1QF 630A / QF 630A) when present without explicit same-line poles
-    for nom in nominals:
-        if not nom["paired"] and "poles_val" not in nom:
-            val = nom["val"]
-            if val >= 250:
-                nom["poles_val"] = "3P"
-                nom["paired"] = True
-
-    # Fallback heuristic for any remaining unpaired nominals
-    for nom in nominals:
-        if "poles_val" not in nom:
-            val = nom["val"]
-            if val >= 100:
-                nom["poles_val"] = "3P"
-            else:
-                nom["poles_val"] = "1P" if val <= 40 else "3P"
-
-    # Group pairs strictly
+    # Group pairs strictly by (poles, current_a)
     grouped = {}
-    total_pairs = 0
-    for nom in nominals:
-        p_val = nom["poles_val"]
-        c_val = str(nom["val"])
-        key = (p_val, c_val)
+    for p in pairs:
+        key = (p["poles"], str(p["current_a"]))
         grouped[key] = grouped.get(key, 0) + 1
-        total_pairs += 1
 
     group_strs = [f"{p}_{c}:{q}" for (p, c), q in grouped.items()]
-    skip_str = f"skip_setting={','.join(skipped_settings)} " if skipped_settings else ""
-    logger.info(f"[Fallback] used=true {skip_str}groups={','.join(group_strs)}")
+    print(f"[Fallback] n={len(pairs)} groups={','.join(group_strs)}", flush=True)
 
     items = []
     for (poles, current_a), qty in grouped.items():
