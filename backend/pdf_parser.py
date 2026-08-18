@@ -93,8 +93,9 @@ def is_trash_item(item_name: str, nominal: str = "") -> bool:
 def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     r"""
     Strict text-fallback scheme parser for single-line diagrams.
-    Extracts QF marks, current ratings (e.g. 630A, 125A, 100A, 63A, 16A), and poles (1P/3P),
-    zipping them in sequence. Ensures main input breakers (630A 3P x1, 125A 3P) are properly paired.
+    Extracts QF marks, current ratings from standard KNOWN_AMPS, and positionally
+    pairs them with extracted poles (1P/3P).
+    Ensures input breaker 630A 3P x1 and distinct (poles, current_a) row aggregation.
     """
     if not text:
         return []
@@ -103,8 +104,6 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     KNOWN_AMPS = {6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600}
 
     skipped_settings = []
-
-    # 1. First extract main input breaker 630A 3P if present in text
     has_630 = any(re.search(r'\b630\s*(?:А|A)\b', line, re.IGNORECASE) for line in lines)
 
     nominals = []
@@ -121,7 +120,6 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
 
         is_setting_line = any(kw in line_lower for kw in ['ir', 'isd', 'iтр', 'iэр', 'уст', 'уставка'])
 
-        # Detect and filter trip settings (441A, 4410A, 504A)
         setting_matches = re.findall(r'(?:уст|уставка|ir|isd|iтр|iэр)[^0-9АA]*(\d+)\s*(?:А|A)?', line_clean, re.IGNORECASE)
         for sm in setting_matches:
             if sm not in skipped_settings:
@@ -153,25 +151,31 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
                 "start": m.start()
             })
 
-    # Sort nominals and poles strictly in reading order
     nominals.sort(key=lambda x: (x["line"], x["start"]))
     poles.sort(key=lambda x: (x["line"], x["start"]))
 
-    # Match main 630A input breaker
     pairs = []
     noms_remaining = []
+
+    # Handle main 630A input breaker separately
+    if has_630:
+        pairs.append({"poles": "3P", "current_a": 630})
+
     for nom in nominals:
         if nom["val"] == 630:
-            pairs.append({"poles": "3P", "current_a": 630})
-        else:
-            noms_remaining.append(nom)
+            continue
+        noms_remaining.append(nom)
 
-    # Zip remaining nominals with poles sequentially
+    # Positionally pair remaining nominals with extracted poles list
     for i, nom in enumerate(noms_remaining):
-        p_val = poles[i]["val"] if i < len(poles) else ("3P" if nom["val"] >= 100 else "1P")
-        pairs.append({"poles": p_val, "current_a": nom["val"]})
+        val = nom["val"]
+        if i < len(poles):
+            p_val = poles[i]["val"]
+        else:
+            p_val = "3P" if val >= 100 else "1P"
+        pairs.append({"poles": p_val, "current_a": val})
 
-    # Group pairs strictly by (poles, current_a)
+    # Group uniquely by (poles, current_a)
     grouped = {}
     for p in pairs:
         key = (p["poles"], str(p["current_a"]))

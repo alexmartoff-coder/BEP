@@ -157,10 +157,8 @@ def generate_preliminary_kp(boards: List[Dict[str, Any]], price_map: Dict[str, f
 
                         # Do not match 1P single-phase current rating positions to 3P or N-pole breakers (e.g. 1P+N, 3P+N) if 1P is requested
                         if poles == '1P':
-                            if '3p' in cand_name or '3пол' in cand_name:
-                                score -= 500
-                            if '1p+n' in cand_name or '3p+n' in cand_name or '+n' in cand_name:
-                                score -= 50
+                            if any(p in cand_name for p in ['3p', '3пол', '4p', '4пол', '1p+n', '3p+n', '+n']):
+                                score -= 2000
 
                         # Check category conflict (e.g. breaker vs VFD)
                         if item_cat != 'unknown' and cand_cat != 'unknown' and item_cat != cand_cat:
