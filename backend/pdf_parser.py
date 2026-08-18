@@ -214,7 +214,7 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
 
     group_strs = [f"{p}_{c}:{q}" for (p, c), q in grouped.items()]
     skip_str = f"skip_setting={','.join(skipped_settings)} " if skipped_settings else ""
-    logger.info(f"[Fallback] {skip_str}groups={','.join(group_strs)}")
+    logger.info(f"[Fallback] used=true {skip_str}groups={','.join(group_strs)}")
 
     items = []
     for (poles, current_a), qty in grouped.items():
@@ -266,22 +266,26 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[st
 
     # 2. Check if Vision successfully returned elements
     if vision_items:
-        logger.info(f"[Vision] items={len(vision_items)}")
+        logger.info(f"[Vision] status=ok items={len(vision_items)}")
+        logger.info("[Geom] used=false qf_cols=0 groups=")
+        logger.info("[Fallback] used=false groups=")
         source_items = vision_items
         is_vision = True
     else:
-        logger.info("[Vision] empty/429 -> hybrid fallback")
+        logger.info("[Vision] status=empty items=0")
         # Try geometric parser via pdfplumber first
         from backend.geom_parser import parse_schematic_geom
         geom_items = parse_schematic_geom(pdf_bytes)
 
         total_geom_items = sum(it.get("qty", 1) for it in geom_items)
+        geom_strs = [f"{it.get('poles')}_{it.get('current_a')}:{it.get('qty')}" for it in geom_items]
         if len(geom_items) >= 3 or total_geom_items >= 5:
-            logger.info(f"[Hybrid] Using Geom parser result: {len(geom_items)} groups, {total_geom_items} total items")
+            logger.info(f"[Geom] used=true groups={','.join(geom_strs)}")
+            logger.info("[Fallback] used=false groups=")
             source_items = geom_items
         else:
+            logger.info(f"[Geom] used=false groups={','.join(geom_strs)}")
             fallback_items = text_fallback_scheme_parser(extracted_text)
-            logger.info(f"[Hybrid] Using Regex fallback result: {len(fallback_items)} groups")
             source_items = fallback_items
 
     # 3. Apply strict trash filter and normalization
@@ -363,6 +367,11 @@ async def parse_pdf_combined_to_bom(pdf_bytes: bytes, custom_prompt: Optional[st
                 "type": vit.get("type")
             }
     grouped_valid_items = list(grouped_map.values())
+
+    # Log BOM final groups
+    final_group_strs = [f"{it.get('poles')}_{it.get('current_a')}:{it.get('qty')}" for it in grouped_valid_items if it.get('poles') and it.get('current_a')]
+    total_bom_items = sum(it.get('qty', 1) for it in grouped_valid_items)
+    logger.info(f"[BOM] final_groups={','.join(final_group_strs)} total_items={total_bom_items}")
 
     # 4. If both Vision and text fallback yield 0 valid elements
     if not grouped_valid_items:
