@@ -121,13 +121,16 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина', 'штамп', 'лист']):
             continue
 
-        # Detect and skip trip setting values (Ir, Isd, Iтр, Iэр, уст, уставка)
         is_setting_line = any(kw in line_lower for kw in ['ir', 'isd', 'iтр', 'iэр', 'уст', 'уставка'])
-        if is_setting_line:
-            setting_matches = re.findall(r'\b(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE)
-            for sm in setting_matches:
+
+        # Detect and remove specific trip setting expressions (e.g. "уставка 504А", "уст. 504А", "Ir-441A", "Isd-4410A")
+        # to allow preserving main input breaker rating on the same line (e.g., "1QF 630А (уставка 504А)")
+        setting_matches = re.findall(r'(?:уст|уставка|ir|isd|iтр|iэр)[^0-9АA]*(\d+)\s*(?:А|A)?', line_clean, re.IGNORECASE)
+        for sm in setting_matches:
+            if sm not in skipped_settings:
                 skipped_settings.append(sm)
-            line_clean = re.sub(r'\b\d+\s*(?:А|A)\b', '', line_clean, flags=re.IGNORECASE)
+        # Strip setting expressions specifically from line_clean
+        line_clean = re.sub(r'(?:\(?[^)]*?(?:уст|уставка|ir|isd|iтр|iэр)[^)]*?\)?)|(?:(?:ir|isd|iтр|iэр|уст|уставка)[^0-9АA]*\d+\s*(?:А|A)?)', '', line_clean, flags=re.IGNORECASE)
 
         # Clean breaking capacities and dimensions
         line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
@@ -181,6 +184,14 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         nom["paired"] = True
         pol["paired"] = True
         nom["poles_val"] = pol["val"]
+
+    # Explicit check for main input breaker (e.g. 1QF 630A / QF 630A) when present without explicit same-line poles
+    for nom in nominals:
+        if not nom["paired"] and "poles_val" not in nom:
+            val = nom["val"]
+            if val >= 250:
+                nom["poles_val"] = "3P"
+                nom["paired"] = True
 
     # Fallback heuristic for any remaining unpaired nominals
     for nom in nominals:
