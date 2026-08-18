@@ -9,7 +9,8 @@ import logging
 import re
 from typing import Dict, Any, List, Optional, Tuple
 
-from backend.pdf_parser import extract_text_from_pdf, parse_pdf_combined_to_bom
+from backend.pdf_parser import extract_text_from_pdf, parse_pdf_combined_to_bom, text_fallback_scheme_parser
+from backend.geom_parser import parse_schematic_geom
 from backend.bom_parser import analyze_equipment
 from backend.price_parser import parse_price_list, build_and_save_index
 from backend.kp_generator import generate_preliminary_kp, export_kp_to_excel
@@ -510,38 +511,54 @@ async def generate_kp(
         if PROMPT_GENERATOR:
             custom_prompt = PROMPT_GENERATOR.generate()
 
-        # 1. Parse PDF specification text and OpenRouter Vision combined
+        # 1. Parse PDF specification text and execute geometric schematic parser
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes)
 
-        # Parse Vision first or text fallback
-        # Let's perform custom invocation to obtain precise logging
-        import tempfile
-        tmp_path = None
-        vision_items = []
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(pdf_bytes)
-                tmp_path = tmp.name
-            from backend.vision_parser import parse_equipment_from_pdf
-            vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt)
-        except Exception as e:
-            logging.getLogger("main").error(f"[Vision Error] {e}")
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
+        # Call parse_schematic_geom directly on PDF bytes
+        geom_items = parse_schematic_geom(pdf_bytes)
+        print(f"[Geom] used={bool(geom_items)} n={len(geom_items)}", flush=True)
 
-        if vision_items:
-            logging.getLogger("main").info(f"[Vision] items={len(vision_items)}")
-            source_items = vision_items
+        total_geom_qty = sum(it.get("qty", 1) for it in geom_items) if geom_items else 0
+
+        source_items = []
+        source_type = "fallback"
+
+        # Check if geom parser gave a complete schematic set (groups >= 3 OR total qty >= 5)
+        if geom_items and (len(geom_items) >= 3 or total_geom_qty >= 5):
+            source_items = geom_items
+            source_type = "geom"
         else:
-            logging.getLogger("main").info("[Vision] items=empty")
-            from backend.pdf_parser import text_fallback_scheme_parser
-            source_items = text_fallback_scheme_parser(extracted_text)
-            logging.getLogger("main").info(f"[Fallback] items={len(source_items)}")
+            # Otherwise attempt Vision API parsing
+            import tempfile
+            tmp_path = None
+            vision_items = []
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(pdf_bytes)
+                    tmp_path = tmp.name
+                from backend.vision_parser import parse_equipment_from_pdf
+                vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt)
+            except Exception as e:
+                logging.getLogger("main").error(f"[Vision Error] {e}")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+            if vision_items:
+                logging.getLogger("main").info(f"[Vision] items={len(vision_items)}")
+                source_items = vision_items
+                source_type = "vision"
+            else:
+                logging.getLogger("main").info("[Vision] items=empty")
+                fallback_items = text_fallback_scheme_parser(extracted_text)
+                source_items = fallback_items
+                source_type = "fallback"
+
+        print(f"[BOM] source={source_type} n={len(source_items)}", flush=True)
 
         # Apply strict trash filter and normalization
         from backend.pdf_parser import is_trash_item
@@ -565,8 +582,8 @@ async def generate_kp(
             poles_val = str(item.get("poles") or "3P")
             raw_qty = int(item.get("qty") or 1)
             logging.getLogger("main").info(f"[Raw Qty] item='{item_name}' raw_qty={raw_qty}")
-            # Clamp unconfirmed vision bulk quantity > 50 to prevent 200+ hallucinated multipliers
-            safe_qty = raw_qty if raw_qty <= 50 else 1
+            # Limit group quantity to <= 40
+            safe_qty = min(raw_qty, 40)
             valid_items.append({
                 "article": str(item.get("mark") or ""),
                 "name": item_name if item_name else (f"Авт. выкл. {poles_val} {current_val}А" if current_val else "Авт. выкл."),
