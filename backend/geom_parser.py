@@ -7,9 +7,9 @@ import pdfplumber
 
 logger = logging.getLogger("geom_parser")
 
-def extract_words_from_pdf(pdf_bytes: bytes) -> List[Dict[str, Any]]:
+def extract_words_from_pdf(pdf_bytes: bytes, selected_pages: Optional[List[int]] = None) -> List[Dict[str, Any]]:
     """
-    Extracts all words with bounding box coordinates from PDF bytes.
+    Extracts all words with bounding box coordinates from PDF bytes for selected_pages (0-indexed).
     First attempts extraction via PyMuPDF (fast & high precision).
     Falls back to pdfplumber if PyMuPDF returns no text words.
     """
@@ -21,6 +21,8 @@ def extract_words_from_pdf(pdf_bytes: bytes) -> List[Dict[str, Any]]:
     try:
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         for page_idx, page in enumerate(doc):
+            if selected_pages is not None and page_idx not in selected_pages:
+                continue
             # word format: (x0, y0, x1, y1, word_str, block_no, line_no, word_no)
             page_words = page.get_text("words")
             for w in page_words:
@@ -45,6 +47,8 @@ def extract_words_from_pdf(pdf_bytes: bytes) -> List[Dict[str, Any]]:
         try:
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
                 for page_idx, page in enumerate(pdf.pages):
+                    if selected_pages is not None and page_idx not in selected_pages:
+                        continue
                     extracted = page.extract_words() or []
                     for w in extracted:
                         text = str(w.get("text", "")).strip()
@@ -231,7 +235,7 @@ def group_equipment(pairs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         })
     return items
 
-def parse_schematic_geom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
+def parse_schematic_geom(pdf_bytes: bytes, selected_pages: Optional[List[int]] = None) -> List[Dict[str, Any]]:
     """
     Main geometric parser entry point.
     1. Extracts words with coordinates from PDF via PyMuPDF / pdfplumber.
@@ -245,7 +249,7 @@ def parse_schematic_geom(pdf_bytes: bytes) -> List[Dict[str, Any]]:
     if not pdf_bytes:
         return []
 
-    words = extract_words_from_pdf(pdf_bytes)
+    words = extract_words_from_pdf(pdf_bytes, selected_pages=selected_pages)
     if not words:
         return []
 
