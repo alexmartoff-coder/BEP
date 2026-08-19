@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -65,6 +65,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def parse_page_range_to_indices(page_range_str: Optional[str]) -> Optional[List[int]]:
+    """Parses page range strings like '1, 2-4, 6' into 0-indexed page indices [0, 1, 2, 3, 5]."""
+    if not page_range_str or not str(page_range_str).strip():
+        return None
+    indices = set()
+    parts = str(page_range_str).split(',')
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            sub = part.split('-')
+            if len(sub) == 2 and sub[0].strip().isdigit() and sub[1].strip().isdigit():
+                start_p = int(sub[0].strip())
+                end_p = int(sub[1].strip())
+                for p in range(min(start_p, end_p), max(start_p, end_p) + 1):
+                    if p >= 1:
+                        indices.add(p - 1)
+        elif part.isdigit():
+            p = int(part)
+            if p >= 1:
+                indices.add(p - 1)
+    return sorted(list(indices)) if indices else None
 
 def convert_boards_to_flat_equipment(boards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Converts structured board groups into a flat equipment list format for backwards compatibility."""
@@ -484,7 +508,8 @@ async def upload_pdf(file: UploadFile = File(...)):
 @app.post("/api/generate-kp")
 async def generate_kp(
     specification: UploadFile = File(...),
-    pricelists: List[UploadFile] = File(None)
+    pricelists: List[UploadFile] = File(None),
+    page_range: Optional[str] = Form(None)
 ):
     """
     Real business-workflow endpoint:
@@ -511,12 +536,17 @@ async def generate_kp(
         if PROMPT_GENERATOR:
             custom_prompt = PROMPT_GENERATOR.generate()
 
+        # 0. Parse page_range if provided
+        selected_pages = parse_page_range_to_indices(page_range)
+        if selected_pages:
+            logging.getLogger("main").info(f"[Pages] Filtered processing to page indices: {selected_pages}")
+
         # 1. Parse PDF specification text and execute geometric schematic parser
         pdf_bytes = await specification.read()
-        extracted_text = extract_text_from_pdf(pdf_bytes)
+        extracted_text = extract_text_from_pdf(pdf_bytes, selected_pages=selected_pages)
 
         # 1. Always execute geometric schematic parser
-        geom_items = parse_schematic_geom(pdf_bytes)
+        geom_items = parse_schematic_geom(pdf_bytes, selected_pages=selected_pages)
         geom_n = len(geom_items)
         geom_amps = set(it.get("current_a") for it in geom_items if it.get("current_a"))
         print(f"[Geom] used={bool(geom_items)} n={geom_n}", flush=True)
@@ -534,7 +564,7 @@ async def generate_kp(
                 tmp.write(pdf_bytes)
                 tmp_path = tmp.name
             from backend.vision_parser import parse_equipment_from_pdf
-            vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt)
+            vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt, selected_pages=selected_pages)
         except Exception as e:
             logging.getLogger("main").error(f"[Vision Error] {e}")
         finally:

@@ -14,9 +14,9 @@ from backend.bom_parser import parse_bom_from_text
 
 logger = logging.getLogger("pdf_parser")
 
-def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+def extract_text_from_pdf(pdf_bytes: bytes, selected_pages: Optional[List[int]] = None) -> str:
     """
-    Extracts text from PDF bytes. Uses pdfplumber first.
+    Extracts text from PDF bytes for selected_pages (0-indexed). Uses pdfplumber first.
     If the extracted text is empty or too short, falls back to OCR via pytesseract.
     """
     extracted_text = ""
@@ -25,7 +25,9 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             pages_text = []
-            for page in pdf.pages:
+            for page_idx, page in enumerate(pdf.pages):
+                if selected_pages is not None and page_idx not in selected_pages:
+                    continue
                 text = page.extract_text()
                 if text:
                     pages_text.append(text)

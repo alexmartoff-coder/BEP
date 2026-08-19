@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const priceSelectBtn = document.getElementById('price-select-btn');
     const priceFileStatus = document.getElementById('price-file-status');
 
+    const pdfPagesInput = document.getElementById('pdf-pages-input');
     const generateKpBtn = document.getElementById('generate-kp-btn');
     const kpResultsContainer = document.getElementById('kp-results-container');
     const kpTablesWrapper = document.getElementById('kp-tables-wrapper');
@@ -194,6 +195,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const formData = new FormData();
         formData.append('specification', pdfFile);
+
+        const pageRange = pdfPagesInput ? pdfPagesInput.value.trim() : '';
+        if (pageRange) {
+            formData.append('page_range', pageRange);
+        }
 
         // Append all selected price lists if uploaded
         if (priceFiles.length > 0) {

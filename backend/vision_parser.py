@@ -8,6 +8,7 @@ import io
 import re
 from typing import List, Dict, Any, Optional
 import tempfile
+import pymupdf
 from PIL import Image, ImageEnhance
 from pdf2image import convert_from_path
 from openai import OpenAI
@@ -107,7 +108,7 @@ def clean_json_response(text: str) -> str:
         text = "\n".join(lines).strip()
     return text
 
-async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
+async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] = None, selected_pages: Optional[List[int]] = None) -> List[Dict[str, Any]]:
     """
     Extracts equipment from PDF using OpenRouter API with google/gemma-4-26b-a4b-it:free model (primary)
     and google/gemma-4-31b-it:free (fallback if 404/429).
@@ -133,10 +134,23 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
             api_key=api_key
         )
 
-        # Convert PDF to PIL images in an executor to avoid blocking the event loop
-        # We only convert the first 2 pages at a high/clear DPI (150) to make sure OCR reads tiny text perfectly
-        logger.info(f"[Vision] Converting PDF {pdf_path} to images (first 2 pages, 150 DPI)...")
-        images = await asyncio.to_thread(convert_from_path, pdf_path, dpi=150, first_page=1, last_page=2)
+        # Convert PDF pages to PIL images via PyMuPDF (fast & reliable) or pdf2image fallback
+        logger.info(f"[Vision] Converting PDF {pdf_path} to images (selected_pages={selected_pages})...")
+        images = []
+        try:
+            doc = pymupdf.open(pdf_path)
+            target_pages = selected_pages if selected_pages is not None else [0, 1]
+            for p_idx in target_pages:
+                if 0 <= p_idx < len(doc):
+                    page = doc[p_idx]
+                    pix = page.get_pixmap(dpi=150)
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    images.append(img)
+        except Exception as p_err:
+            logger.warning(f"[Vision] PyMuPDF page rendering failed: {p_err}. Falling back to pdf2image.")
+            first_p = (selected_pages[0] + 1) if (selected_pages and len(selected_pages) > 0) else 1
+            last_p = (selected_pages[-1] + 1) if (selected_pages and len(selected_pages) > 0) else 2
+            images = await asyncio.to_thread(convert_from_path, pdf_path, dpi=150, first_page=first_p, last_page=last_p)
 
         if not images:
             logger.warning(f"[Vision] No pages extracted from PDF: {pdf_path}")
