@@ -41,7 +41,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // PDF selection events
     pdfSelectBtn.addEventListener('click', (e) => { e.stopPropagation(); pdfFileInput.click(); });
-    pdfDropZone.addEventListener('click', () => pdfFileInput.click());
+    pdfDropZone.addEventListener('click', (e) => {
+        // Prevent opening file dialog if click originated from inside pages input
+        if (e.target && (e.target.id === 'pdf-pages-input' || e.target.closest('#pdf-pages-input') || e.target.tagName === 'LABEL')) {
+            return;
+        }
+        pdfFileInput.click();
+    });
+
+    if (pdfPagesInput) {
+        pdfPagesInput.addEventListener('click', (e) => e.stopPropagation());
+        pdfPagesInput.addEventListener('focus', (e) => e.stopPropagation());
+
+        // Sanitize input to only allow digits, hyphens, commas, and spaces
+        pdfPagesInput.addEventListener('input', (e) => {
+            const rawVal = e.target.value;
+            const sanitizedVal = rawVal.replace(/[^0-9\s,-]/g, '');
+            if (rawVal !== sanitizedVal) {
+                e.target.value = sanitizedVal;
+            }
+        });
+    }
     pdfFileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             setPdfFile(e.target.files[0]);
