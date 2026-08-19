@@ -545,54 +545,58 @@ async def generate_kp(
         pdf_bytes = await specification.read()
         extracted_text = extract_text_from_pdf(pdf_bytes, selected_pages=selected_pages)
 
-        # 1. Always execute geometric schematic parser
+        # 1. Execute fast local geometric schematic parser
         geom_items = parse_schematic_geom(pdf_bytes, selected_pages=selected_pages)
         geom_n = len(geom_items)
         geom_amps = set(it.get("current_a") for it in geom_items if it.get("current_a"))
         print(f"[Geom] used={bool(geom_items)} n={geom_n}", flush=True)
 
-        # 2. Always execute text fallback schematic parser
+        # 2. Execute fast local text fallback schematic parser
         fallback_items = text_fallback_scheme_parser(extracted_text) if extracted_text else []
         fallback_n = len(fallback_items)
 
-        # 3. Attempt Vision API
-        import tempfile
-        tmp_path = None
-        vision_items = []
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(pdf_bytes)
-                tmp_path = tmp.name
-            from backend.vision_parser import parse_equipment_from_pdf
-            vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt, selected_pages=selected_pages)
-        except Exception as e:
-            logging.getLogger("main").error(f"[Vision Error] {e}")
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
+        source_items = []
+        source_type = "fallback"
 
-        # 4. Selection priority:
-        # - geom if groups >= 3 AND distinct amperages > 1
-        # - otherwise fallback (text_items) if groups >= 3
-        # - otherwise vision
+        # 3. Fast-path: If local geom or fallback parsers found valid schematic rows (>= 3 groups),
+        # use them immediately without calling slow multimodal Vision API to prevent 502 Gateway Timeouts!
         if geom_n >= 3 and len(geom_amps) > 1:
             source_items = geom_items
             source_type = "geom"
+            logging.getLogger("main").info("[Vision] Skipped slow Vision API call because geom schematic parser succeeded.")
         elif fallback_n >= 3:
             source_items = fallback_items
             source_type = "fallback"
-        elif vision_items:
-            source_items = vision_items
-            source_type = "vision"
-        elif geom_items:
-            source_items = geom_items
-            source_type = "geom"
+            logging.getLogger("main").info("[Vision] Skipped slow Vision API call because text fallback schematic parser succeeded.")
         else:
-            source_items = fallback_items
-            source_type = "fallback"
+            # 4. Slow-path: Call Vision API only if local text/geom schematic parsers yielded insufficient results
+            import tempfile
+            tmp_path = None
+            vision_items = []
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(pdf_bytes)
+                    tmp_path = tmp.name
+                from backend.vision_parser import parse_equipment_from_pdf
+                vision_items = await parse_equipment_from_pdf(tmp_path, custom_prompt=custom_prompt, selected_pages=selected_pages)
+            except Exception as e:
+                logging.getLogger("main").error(f"[Vision Error] {e}")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+            if vision_items:
+                source_items = vision_items
+                source_type = "vision"
+            elif geom_items:
+                source_items = geom_items
+                source_type = "geom"
+            else:
+                source_items = fallback_items
+                source_type = "fallback"
 
         print(f"[BOM] source={source_type} n={len(source_items)}", flush=True)
 
