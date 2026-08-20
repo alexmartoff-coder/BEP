@@ -96,6 +96,21 @@ def pil_image_to_base64(img) -> str:
         img.save(buffered, format="PNG")
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
+def load_kb_gost_rules(max_chars: int = 3000) -> str:
+    """Loads GOST 2.709 rules from data/kb/gost_2_709_rules.md if present."""
+    kb_path = "data/kb/gost_2_709_rules.md"
+    if os.path.exists(kb_path):
+        try:
+            with open(kb_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    trimmed = content[:max_chars]
+                    print(f"[KB] gost_2_709 loaded chars={len(trimmed)}", flush=True)
+                    return trimmed
+        except Exception as e:
+            logger.warning(f"[KB] Failed to load KB rules from {kb_path}: {e}")
+    return ""
+
 def clean_json_response(text: str) -> str:
     """Strips markdown code blocks and clean whitespaces to extract raw JSON."""
     text = text.strip()
@@ -158,12 +173,17 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
 
         images_to_send = images
 
+        # Load GOST 2.709 KB rules if present
+        kb_rules = load_kb_gost_rules()
+        kb_prefix = f"\nBAZA ZNANY GOST 2.709:\n{kb_rules}\n" if kb_rules else ""
+
         # Prepare strict prompt as requested by the user
         if custom_prompt:
-            prompt = custom_prompt
-            logger.info(f"[Vision] Using custom prompt: {custom_prompt[:150]}...")
+            prompt = custom_prompt + kb_prefix
+            logger.info(f"[Vision] Using custom prompt with KB: {custom_prompt[:150]}...")
         else:
-            prompt = """Ты инженер-сметчик по электрощитовому оборудованию CHINT.
+            prompt = f"""Ты инженер-сметчик по электрощитовому оборудованию CHINT.
+{kb_prefix}
 На схеме найди и распознай ВСЕ электрические аппараты и силовые устройства.
 Распознай следующие типы приборов:
 1. Автоматические выключатели (обозначение QF) — тип "автомат"
@@ -184,7 +204,7 @@ async def parse_equipment_from_pdf(pdf_path: str, custom_prompt: Optional[str] =
 Группируй абсолютно идентичные приборы (с одинаковыми nominal, poles и type) — складывай их количество в поле qty.
 Игнорируй: кабели, шины, надписи "Сортер", "Резерв", размеры в мм, кадастровые адреса, штампы листов.
 Ответ верни СТРОГО как один валидный JSON-массив приборов, без лишнего текста вокруг:
-[{"mark":"QF1","series":"NM8N","nominal":"125A","poles":"3P","type":"автомат","qty":2}]"""
+[{{"mark":"QF1","series":"NM8N","nominal":"125A","poles":"3P","type":"автомат","qty":2}}]"""
             logger.info("[Vision] Using default fallback prompt.")
 
         # Format payload in OpenAI Vision API format
