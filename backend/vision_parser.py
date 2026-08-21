@@ -96,19 +96,19 @@ def pil_image_to_base64(img) -> str:
         img.save(buffered, format="PNG")
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-def load_kb_gost_rules(max_chars: int = 3000) -> str:
-    """Loads GOST 2.709 rules from data/kb/gost_2_709_rules.md if present."""
-    kb_path = "data/kb/gost_2_709_rules.md"
-    if os.path.exists(kb_path):
-        try:
-            with open(kb_path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content:
-                    trimmed = content[:max_chars]
-                    print(f"[KB] gost_2_709 loaded chars={len(trimmed)}", flush=True)
-                    return trimmed
-        except Exception as e:
-            logger.warning(f"[KB] Failed to load KB rules from {kb_path}: {e}")
+def load_kb_gost_rules(max_chars: int = 5000) -> str:
+    """Loads GOST rules from data/kb/gost_rules.md (or data/kb/gost_2_709_rules.md) if present."""
+    for kb_path in ["data/kb/gost_rules.md", "data/kb/gost_2_709_rules.md"]:
+        if os.path.exists(kb_path):
+            try:
+                with open(kb_path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        trimmed = content[:max_chars]
+                        print("[KB] gost_rules loaded.", flush=True)
+                        return trimmed
+            except Exception as e:
+                logger.warning(f"[KB] Failed to load KB rules from {kb_path}: {e}")
     return ""
 
 def clean_json_response(text: str) -> str:
