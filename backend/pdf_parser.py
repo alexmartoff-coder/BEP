@@ -152,17 +152,23 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         if len(pole_tokens) >= 3:
             pole_rows.append([f"{p}P" for p in pole_tokens])
 
-    # Check for explicit standalone QF1 breaker (e.g. "QF1 125А 3P" or "QF1 125А")
+    # Search for standalone QF1 mark across multi-line text window (+/- 120 chars)
     qf1_match = None
-    for line in lines:
-        m = re.search(r'\bQF1\b[^0-9АA]*(\d+)\s*(?:А|A)?\b', line, re.IGNORECASE)
-        if m:
-            val = int(m.group(1))
+    m_qf1 = re.search(r'\bQF1\b', text)
+    if m_qf1:
+        qf1_idx = m_qf1.start()
+        start_pos = max(0, qf1_idx - 20)
+        end_pos = min(len(text), qf1_idx + 120)
+        window_text = text[start_pos:end_pos]
+
+        amp_m = re.search(r'\b(\d+)\s*(?:А|A)\b', window_text, re.IGNORECASE)
+        pole_m = re.search(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', window_text, re.IGNORECASE)
+
+        if amp_m:
+            val = int(amp_m.group(1))
             if val in VALID_AMPS:
-                p_m = re.search(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line, re.IGNORECASE)
-                p_val = f"{p_m.group(1)}P" if p_m else ("3P" if val >= 100 else "1P")
+                p_val = f"{pole_m.group(1)}P" if pole_m else ("3P" if val >= 100 else "1P")
                 qf1_match = {"poles": p_val, "current_a": val}
-                break
 
     # Select the longest candidate QF rows
     if amp_rows and pole_rows:
@@ -180,12 +186,12 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
             p_val = pole_seq[i] if i < len(pole_seq) else ("3P" if amp >= 100 else "1P")
             pairs.append({"poles": p_val, "current_a": amp})
 
-        # If QF1 exists as a distinct entry not already counted at the start of clean_amp_seq, add it
+        # Add QF1 if found and not already counted
         if qf1_match:
-            row_qf1_count = sum(1 for p in pairs if p["poles"] == qf1_match["poles"] and p["current_a"] == qf1_match["current_a"])
-            # If QF row has 7 items and QF1 is separate, increase count by 1
-            if row_qf1_count == 7 or (clean_amp_seq and clean_amp_seq[0] != qf1_match["current_a"]):
-                pairs.append(qf1_match)
+            pairs.append(qf1_match)
+            print(f"[Fallback] qf1_added={qf1_match['current_a']}/{qf1_match['poles']}", flush=True)
+        else:
+            print("[Fallback] qf1_added=no", flush=True)
     else:
         # Fallback to line-by-line pairing if no single row has >= 3 elements
         all_amps = []
