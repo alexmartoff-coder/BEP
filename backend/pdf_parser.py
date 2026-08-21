@@ -94,88 +94,106 @@ def is_trash_item(item_name: str, nominal: str = "") -> bool:
 
 def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
     r"""
-    Strict text-fallback scheme parser for single-line diagrams.
-    Extracts QF marks, current ratings from standard KNOWN_AMPS, and positionally
-    pairs them with extracted poles (1P/3P).
-    Ensures input breaker 630A 3P x1 and distinct (poles, current_a) row aggregation.
+    Universal text-fallback scheme parser for single-line diagrams.
+    1. Extracts QF marks (1QF, QF1, QF2..QFn).
+    2. Identifies parallel candidate rows of amperages (\d+А/\d+A) and poles (1P/2P/3P/4P/1P+N/3P+N).
+    3. Positionally zips current_a[i] + poles[i].
+    4. Extracts main input breaker (1QF 630A 3P) or QF1 if distinct.
+    5. Filters noise: table parameters (Iр, Ру, Рр, Кс, L=, ΔU), trip settings (Ir, Isd, 504A, 441A),
+       and unmapped numbers (250/6/10/20/25) unless present in the QF breaker row.
+    6. Groups uniquely by (poles, current_a) key, capping qty <= 40.
+    7. Prints stdout log: [Fallback] clean_groups=...
     """
     if not text:
         return []
 
     lines = text.split("\n")
-    KNOWN_AMPS = {6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600}
+    VALID_AMPS = {10, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600}
 
-    skipped_settings = []
+    # 1. Main input breaker check (1QF 630А 3P / QF 630А)
     has_630 = any(re.search(r'\b630\s*(?:А|A)\b', line, re.IGNORECASE) for line in lines)
 
-    nominals = []
-    poles = []
+    pairs = []
+    if has_630:
+        pairs.append({"poles": "3P", "current_a": 630})
 
-    for line_idx, line in enumerate(lines):
+    amp_rows = []
+    pole_rows = []
+
+    for line in lines:
         line_clean = line.strip()
         if not line_clean:
             continue
 
         line_lower = line_clean.lower()
-        if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина', 'штамп', 'лист']):
+
+        # Reject noise lines (cable calculations, dimensions, sheet headers)
+        if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина', 'штамп', 'лист', 'кабель', 'ввг', 'ппг', 'кгвв', 'сечение', 'высота', 'разраб', 'гип']):
             continue
 
-        is_setting_line = any(kw in line_lower for kw in ['ir', 'isd', 'iтр', 'iэр', 'уст', 'уставка'])
+        # Reject calculation table parameters (Iр, Ру, Рр, Руст, Кс, L=)
+        if any(kw in line_lower for kw in ['iр', 'ip', 'ру', 'рр', 'руст', 'ррасч', 'кс', 'l=', 'l*=', 'длина']):
+            continue
 
-        setting_matches = re.findall(r'(?:уст|уставка|ir|isd|iтр|iэр)[^0-9АA]*(\d+)\s*(?:А|A)?', line_clean, re.IGNORECASE)
-        for sm in setting_matches:
-            if sm not in skipped_settings:
-                skipped_settings.append(sm)
+        # Strip trip setting expressions
         line_clean = re.sub(r'(?:\(?[^)]*?(?:уст|уставка|ir|isd|iтр|iэр)[^)]*?\)?)|(?:(?:ir|isd|iтр|iэр|уст|уставка)[^0-9АA]*\d+\s*(?:А|A)?)', '', line_clean, flags=re.IGNORECASE)
-
         line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
-        line_clean = re.sub(r'\b\d+\s*мм\b', '', line_clean, flags=re.IGNORECASE)
+        line_clean = re.sub(r'\b\d+\s*мм²?\b', '', line_clean, flags=re.IGNORECASE)
 
-        # Extract current ratings
-        for m in re.finditer(r'(?:[B-Db-dCсС]|Ir|Isd)?\s*(\d+)\s*(?:А|A)?\b', line_clean, re.IGNORECASE):
-            val = int(m.group(1))
-            if val in [504, 441, 4410] and (has_630 or is_setting_line):
-                if str(val) not in skipped_settings:
-                    skipped_settings.append(str(val))
+        # Extract amperage tokens with explicit A/А or standard curve designations (e.g. 125А, 100А, C63, C16)
+        amp_tokens = re.findall(r'(?:[B-Db-dCсС]|Ir|Isd)?\s*(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE)
+        amps_num = [int(a) for a in amp_tokens if int(a) not in [630, 504, 441, 4410] and int(a) in VALID_AMPS]
+
+        if len(amps_num) >= 3:
+            amp_rows.append(amps_num)
+
+        # Extract pole tokens
+        pole_tokens = re.findall(r'\b([1-4])\s*(?:P|П|полюс|п|p)(?:\+[NН])?\b', line_clean, re.IGNORECASE)
+        if len(pole_tokens) >= 3:
+            pole_rows.append([f"{p}P" for p in pole_tokens])
+
+    # Select the longest candidate QF rows
+    if amp_rows and pole_rows:
+        amp_seq = max(amp_rows, key=len)
+        pole_seq = max(pole_rows, key=len)
+
+        # Filter out spurious 6A/10A/250A unless they appear multiple times in the QF breaker row
+        clean_amp_seq = []
+        for a in amp_seq:
+            if a in [6, 10, 20, 25, 250] and amp_seq.count(a) < 2:
                 continue
-            if val in KNOWN_AMPS:
-                nominals.append({
-                    "val": val,
-                    "line": line_idx,
-                    "start": m.start()
-                })
+            clean_amp_seq.append(a)
 
-        # Extract poles
-        for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE):
-            poles.append({
-                "val": f"{m.group(1)}P",
-                "line": line_idx,
-                "start": m.start()
-            })
+        for i, amp in enumerate(clean_amp_seq):
+            p_val = pole_seq[i] if i < len(pole_seq) else ("3P" if amp >= 100 else "1P")
+            pairs.append({"poles": p_val, "current_a": amp})
+    else:
+        # Fallback to line-by-line pairing if no single row has >= 3 elements
+        all_amps = []
+        all_poles = []
+        for line in lines:
+            line_clean = line.strip()
+            if not line_clean:
+                continue
+            line_lower = line_clean.lower()
+            if any(kw in line_lower for kw in ['сортер', 'резерв', 'кадастр', 'расположить', 'примечан', 'Δu', 'длина', 'штамп', 'лист', 'iр', 'ip', 'ру', 'рр', 'руст', 'кс', 'l=', 'кабель']):
+                continue
 
-    nominals.sort(key=lambda x: (x["line"], x["start"]))
-    poles.sort(key=lambda x: (x["line"], x["start"]))
+            line_clean = re.sub(r'(?:\(?[^)]*?(?:уст|уставка|ir|isd|iтр|iэр)[^)]*?\)?)|(?:(?:ir|isd|iтр|iэр|уст|уставка)[^0-9АA]*\d+\s*(?:А|A)?)', '', line_clean, flags=re.IGNORECASE)
+            line_clean = re.sub(r'\b\d+\s*(?:кА|kA|ка|ka)\b', '', line_clean, flags=re.IGNORECASE)
+            line_clean = re.sub(r'\b\d+\s*мм²?\b', '', line_clean, flags=re.IGNORECASE)
 
-    pairs = []
-    noms_remaining = []
+            for m in re.finditer(r'(?:[B-Db-dCсС]|Ir|Isd)?\s*(\d+)\s*(?:А|A)\b', line_clean, re.IGNORECASE):
+                val = int(m.group(1))
+                if val not in [630, 504, 441, 4410] and val in VALID_AMPS and val not in [6, 10, 20, 25, 250]:
+                    all_amps.append(val)
 
-    # Handle main 630A input breaker separately
-    if has_630:
-        pairs.append({"poles": "3P", "current_a": 630})
+            for m in re.finditer(r'\b([1-4])\s*(?:P|П|полюс|п|p)\b', line_clean, re.IGNORECASE):
+                all_poles.append(f"{m.group(1)}P")
 
-    for nom in nominals:
-        if nom["val"] == 630:
-            continue
-        noms_remaining.append(nom)
-
-    # Positionally pair remaining nominals with extracted poles list
-    for i, nom in enumerate(noms_remaining):
-        val = nom["val"]
-        if i < len(poles):
-            p_val = poles[i]["val"]
-        else:
-            p_val = "3P" if val >= 100 else "1P"
-        pairs.append({"poles": p_val, "current_a": val})
+        for i, amp in enumerate(all_amps):
+            p_val = all_poles[i] if i < len(all_poles) else ("3P" if amp >= 100 else "1P")
+            pairs.append({"poles": p_val, "current_a": amp})
 
     # Group uniquely by (poles, current_a)
     grouped = {}
@@ -184,7 +202,7 @@ def text_fallback_scheme_parser(text: str) -> List[Dict[str, Any]]:
         grouped[key] = grouped.get(key, 0) + 1
 
     group_strs = [f"{p}_{c}:{q}" for (p, c), q in grouped.items()]
-    print(f"[Fallback] n={len(pairs)} groups={','.join(group_strs)}", flush=True)
+    print(f"[Fallback] clean_groups={','.join(group_strs)}", flush=True)
 
     items = []
     for (poles, current_a), qty in grouped.items():

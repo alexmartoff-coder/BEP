@@ -558,16 +558,16 @@ async def generate_kp(
         source_items = []
         source_type = "fallback"
 
-        # 3. Fast-path: If local geom or fallback parsers found valid schematic rows (>= 3 groups),
-        # use them immediately without calling slow multimodal Vision API to prevent 502 Gateway Timeouts!
-        if geom_n >= 3 and len(geom_amps) > 1:
-            source_items = geom_items
-            source_type = "geom"
-            logging.getLogger("main").info("[Vision] Skipped slow Vision API call because geom schematic parser succeeded.")
-        elif fallback_n >= 3:
+        # 3. Fast-path: If clean text fallback or geom schematic parsers found valid schematic rows (>= 3 groups),
+        # use fallback/geom immediately without calling slow multimodal Vision API!
+        if fallback_n >= 3:
             source_items = fallback_items
             source_type = "fallback"
             logging.getLogger("main").info("[Vision] Skipped slow Vision API call because text fallback schematic parser succeeded.")
+        elif geom_n >= 3 and len(geom_amps) > 1:
+            source_items = geom_items
+            source_type = "geom"
+            logging.getLogger("main").info("[Vision] Skipped slow Vision API call because geom schematic parser succeeded.")
         else:
             # 4. Slow-path: Call Vision API only if local text/geom schematic parsers yielded insufficient results
             import tempfile
